@@ -1,0 +1,2399 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import { mkdirSync, existsSync, writeFileSync, unlinkSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { authenticateWithBypass } from './auth.js';
+import { createSyncDatabase } from './db/compat.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// Create uploads directory
+const uploadsDir = join(__dirname, 'uploads');
+if (!existsSync(uploadsDir)) {
+  mkdirSync(uploadsDir, { recursive: true });
+}
+
+// CORS configuration - allow mobile apps and web
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+
+    // Allow localhost for development
+    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      return callback(null, true);
+    }
+
+    // Add your production domains here
+    const allowedOrigins = [
+      process.env.WEB_APP_URL,
+      process.env.MOBILE_APP_URL,
+    ].filter(Boolean);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // For development, allow all origins
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Email', 'X-User-Name'],
+};
+
+// Middleware
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '10mb' }));
+app.use('/uploads', express.static(uploadsDir));
+
+// Health check endpoint (no auth required)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Apply authentication to all /api routes (except health check)
+app.use('/api', authenticateWithBypass);
+
+// Database setup
+// Uses SQLite by default, can be configured via DB_TYPE and DB_FILE environment variables
+// See .env.example for configuration options
+const db = createSyncDatabase();
+
+// ============ CORE TABLES ============
+
+// Users table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT,
+    role TEXT DEFAULT 'user' CHECK(role IN ('user', 'manager', 'admin')),
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// User permissions table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    module TEXT NOT NULL,
+    permission TEXT NOT NULL DEFAULT 'viewer',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, module)
+  )
+`);
+
+// ============ MENU TABLES ============
+
+// Menu items table - supports parent-child hierarchy
+db.exec(`
+  CREATE TABLE IF NOT EXISTS menu_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    icon TEXT,
+    path TEXT,
+    parent_id INTEGER,
+    sort_order INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    required_role TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_id) REFERENCES menu_items(id) ON DELETE CASCADE
+  )
+`);
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_menu_items_parent ON menu_items(parent_id)`);
+
+// Seed default menu items if none exist
+const menuCount = db.prepare('SELECT COUNT(*) as count FROM menu_items').get();
+if (menuCount.count === 0) {
+  console.log('Seeding default menu items...');
+
+  // Production menu group
+  const productionResult = db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('production', 'Production', 'CubeIcon', NULL, NULL, 0, 1, NULL)
+  `).run();
+  const productionId = productionResult.lastInsertRowid;
+
+  // Production sub-items
+  db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('production_overview', 'Overview', 'ClipboardDocumentListIcon', '/production', ?, 0, 1, NULL)
+  `).run(productionId);
+
+  db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('instruments', 'Instruments', 'WrenchScrewdriverIcon', '/production/instruments', ?, 1, 1, NULL)
+  `).run(productionId);
+
+  // Administration menu group (admin only)
+  const adminResult = db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('administration', 'Administration', 'ShieldCheckIcon', NULL, NULL, 1, 1, 'admin')
+  `).run();
+  const adminId = adminResult.lastInsertRowid;
+
+  // Administration sub-items
+  db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('modules', 'Modules', 'Squares2X2Icon', '/admin/modules', ?, 0, 1, 'admin')
+  `).run(adminId);
+
+  db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('menu', 'Menu', 'Squares2X2Icon', '/admin/menu', ?, 1, 1, 'admin')
+  `).run(adminId);
+
+  db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('users', 'Users', 'UsersIcon', '/admin/users', ?, 2, 1, 'admin')
+  `).run(adminId);
+
+  db.prepare(`
+    INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+    VALUES ('settings', 'Settings', 'Cog6ToothIcon', '/admin/settings', ?, 3, 1, 'admin')
+  `).run(adminId);
+
+  console.log('Default menu items seeded successfully');
+}
+
+// ============ MODULAR SYSTEM TABLES ============
+
+// Modules table - defines what entity types exist (instruments, goods, visitors, etc.)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS modules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    description TEXT,
+    icon TEXT,
+    is_active INTEGER DEFAULT 1,
+    config TEXT,
+    menu_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (menu_id) REFERENCES menu_items(id) ON DELETE SET NULL
+  )
+`);
+
+// Add menu_id column if it doesn't exist (for existing databases)
+try {
+  db.exec(`ALTER TABLE modules ADD COLUMN menu_id INTEGER REFERENCES menu_items(id) ON DELETE SET NULL`);
+} catch (e) {
+  // Column already exists
+}
+
+// Module fields - defines custom fields for each module
+db.exec(`
+  CREATE TABLE IF NOT EXISTS module_fields (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    field_type TEXT DEFAULT 'text' CHECK(field_type IN ('text', 'number', 'date', 'select', 'textarea', 'boolean', 'email', 'url', 'relation', 'user')),
+    is_required INTEGER DEFAULT 0,
+    options TEXT,
+    default_value TEXT,
+    relation_module TEXT,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE
+  )
+`);
+
+// Add relation_module column to module_fields if it doesn't exist
+try {
+  db.exec(`ALTER TABLE module_fields ADD COLUMN relation_module TEXT`);
+} catch (e) {
+  // Column already exists
+}
+
+// Add warning_yellow_days, warning_red_days, and warning_mode columns for date fields
+try {
+  db.exec(`ALTER TABLE module_fields ADD COLUMN warning_yellow_days INTEGER`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE module_fields ADD COLUMN warning_red_days INTEGER`);
+} catch (e) {
+  // Column already exists
+}
+try {
+  db.exec(`ALTER TABLE module_fields ADD COLUMN warning_mode TEXT DEFAULT 'overdue'`);
+} catch (e) {
+  // Column already exists
+}
+
+// Migration: Recreate module_fields table to update CHECK constraint to include 'relation'
+// This is needed because SQLite doesn't support altering CHECK constraints
+try {
+  const tableInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='module_fields'").get();
+  if (tableInfo && tableInfo.sql && !tableInfo.sql.includes("'relation'")) {
+    console.log('Migrating module_fields table to support relation field type...');
+
+    // 1. Rename old table
+    db.exec(`ALTER TABLE module_fields RENAME TO module_fields_old`);
+
+    // 2. Create new table with updated constraint
+    db.exec(`
+      CREATE TABLE module_fields (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        module_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        field_type TEXT DEFAULT 'text',
+        is_required INTEGER DEFAULT 0,
+        options TEXT,
+        default_value TEXT,
+        relation_module TEXT,
+        sort_order INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 3. Copy data from old table
+    db.exec(`
+      INSERT INTO module_fields (id, module_id, name, display_name, field_type, is_required, options, default_value, relation_module, sort_order, created_at)
+      SELECT id, module_id, name, display_name, field_type, is_required, options, default_value, relation_module, sort_order, created_at
+      FROM module_fields_old
+    `);
+
+    // 4. Drop old table
+    db.exec(`DROP TABLE module_fields_old`);
+
+    console.log('Migration complete.');
+  }
+} catch (e) {
+  console.error('Migration error (non-fatal):', e.message);
+}
+
+// Generic records table - stores records for any module
+db.exec(`
+  CREATE TABLE IF NOT EXISTS records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    data TEXT,
+    status TEXT DEFAULT 'active',
+    created_by TEXT,
+    updated_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE
+  )
+`);
+
+// Generic images table - stores images for any record
+db.exec(`
+  CREATE TABLE IF NOT EXISTS record_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    record_id INTEGER NOT NULL,
+    image_path TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE
+  )
+`);
+
+// Generic documents table - stores documents for any record
+db.exec(`
+  CREATE TABLE IF NOT EXISTS record_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    record_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    file_type TEXT,
+    file_size INTEGER,
+    uploaded_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE
+  )
+`);
+
+// Generic history table - stores history for any record
+db.exec(`
+  CREATE TABLE IF NOT EXISTS record_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    record_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    description TEXT,
+    changed_by TEXT,
+    changes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE
+  )
+`);
+
+// Generic links table - stores links for any record
+db.exec(`
+  CREATE TABLE IF NOT EXISTS record_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    record_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    link_type TEXT DEFAULT 'website',
+    description TEXT,
+    created_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE
+  )
+`);
+
+// Generic companies/contacts table - reusable across modules
+db.exec(`
+  CREATE TABLE IF NOT EXISTS companies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    type TEXT,
+    address TEXT,
+    city TEXT,
+    country TEXT,
+    phone TEXT,
+    email TEXT,
+    website TEXT,
+    notes TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// Link records to companies (many-to-many)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS record_companies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    record_id INTEGER NOT NULL,
+    company_id INTEGER NOT NULL,
+    relationship_type TEXT DEFAULT 'default',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+    FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE,
+    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+    UNIQUE(record_id, company_id, relationship_type)
+  )
+`);
+
+// Create indexes for better performance
+db.exec(`CREATE INDEX IF NOT EXISTS idx_records_module ON records(module_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_record_images_record ON record_images(record_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_record_documents_record ON record_documents(record_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_record_history_record ON record_history(record_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_record_links_record ON record_links(record_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_record_companies_record ON record_companies(record_id)`);
+
+// ============ SEED DEFAULT MODULES ============
+
+// Insert default "instruments" module if not exists
+const instrumentsModule = db.prepare('SELECT id FROM modules WHERE name = ?').get('instruments');
+if (!instrumentsModule) {
+  db.prepare(`
+    INSERT INTO modules (name, display_name, description, icon, config)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    'instruments',
+    'Instruments',
+    'Manage instruments and equipment',
+    'WrenchScrewdriverIcon',
+    JSON.stringify({
+      statuses: ['active', 'inactive', 'maintenance', 'retired'],
+      defaultStatus: 'active',
+      features: ['images', 'documents', 'history', 'links']
+    })
+  );
+
+  // Add default fields for instruments module
+  const moduleId = db.prepare('SELECT id FROM modules WHERE name = ?').get('instruments').id;
+  const fields = [
+    { name: 'serial_number', display_name: 'Serial Number', field_type: 'text', sort_order: 1 },
+    { name: 'category', display_name: 'Category', field_type: 'select', options: JSON.stringify(['Measurement', 'Calibration', 'Testing', 'Analysis', 'Monitoring', 'Control', 'Other']), sort_order: 2 },
+    { name: 'manufacturer', display_name: 'Manufacturer', field_type: 'text', sort_order: 3 },
+    { name: 'model', display_name: 'Model', field_type: 'text', sort_order: 4 },
+    { name: 'location', display_name: 'Location', field_type: 'text', sort_order: 5 },
+    { name: 'purchase_date', display_name: 'Purchase Date', field_type: 'date', sort_order: 6 },
+    { name: 'calibration_date', display_name: 'Calibration Date', field_type: 'date', sort_order: 7 },
+    { name: 'notes', display_name: 'Notes', field_type: 'textarea', sort_order: 8 },
+  ];
+
+  const insertField = db.prepare(`
+    INSERT INTO module_fields (module_id, name, display_name, field_type, options, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const field of fields) {
+    insertField.run(moduleId, field.name, field.display_name, field.field_type, field.options || null, field.sort_order);
+  }
+
+  console.log('Created default instruments module with fields');
+}
+
+// ============ LEGACY TABLES (for backwards compatibility) ============
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS productions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    quantity INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'in_progress', 'completed')),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instruments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    serial_number TEXT,
+    category TEXT,
+    manufacturer TEXT,
+    model TEXT,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'inactive', 'maintenance', 'retired')),
+    location TEXT,
+    purchase_date TEXT,
+    calibration_date TEXT,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instrument_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_id INTEGER NOT NULL,
+    image_path TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (instrument_id) REFERENCES instruments(id) ON DELETE CASCADE
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instrument_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    file_type TEXT,
+    file_size INTEGER,
+    uploaded_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (instrument_id) REFERENCES instruments(id) ON DELETE CASCADE
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instrument_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    description TEXT,
+    changed_by TEXT,
+    changes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (instrument_id) REFERENCES instruments(id) ON DELETE CASCADE
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instrument_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    link_type TEXT DEFAULT 'website',
+    description TEXT,
+    created_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (instrument_id) REFERENCES instruments(id) ON DELETE CASCADE
+  )
+`);
+
+// Helper function to get instrument with images
+function getInstrumentWithImages(id) {
+  const instrument = db.prepare('SELECT * FROM instruments WHERE id = ?').get(id);
+  if (instrument) {
+    const images = db.prepare('SELECT * FROM instrument_images WHERE instrument_id = ? ORDER BY sort_order, id').all(id);
+    instrument.images = images;
+  }
+  return instrument;
+}
+
+// Helper function to get all instruments with images
+function getAllInstrumentsWithThumbnail() {
+  const instruments = db.prepare('SELECT * FROM instruments ORDER BY created_at DESC').all();
+  return instruments.map(instrument => {
+    const images = db.prepare('SELECT * FROM instrument_images WHERE instrument_id = ? ORDER BY sort_order, id').all(instrument.id);
+    return {
+      ...instrument,
+      thumbnail: images.length > 0 ? images[0].image_path : null,
+      images: images
+    };
+  });
+}
+
+// API Routes
+
+// ============ USER ROUTES ============
+
+// Get current user by email (called on login)
+app.get('/api/users/me', (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+
+    // If user doesn't exist, create with default role
+    if (!user) {
+      const stmt = db.prepare(`
+        INSERT INTO users (email, name, role) VALUES (?, ?, ?)
+      `);
+      // First user becomes admin
+      const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get();
+      const role = userCount.count === 0 ? 'admin' : 'user';
+
+      const result = stmt.run(email, req.query.name || email.split('@')[0], role);
+      user = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+    }
+
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get all users (admin only - frontend should enforce this)
+app.get('/api/users', (req, res) => {
+  try {
+    const users = db.prepare('SELECT * FROM users ORDER BY created_at DESC').all();
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update user role (admin only)
+app.put('/api/users/:id', (req, res) => {
+  try {
+    const { role, is_active, name } = req.body;
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+
+    if (!existing) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const stmt = db.prepare(`
+      UPDATE users
+      SET role = ?, is_active = ?, name = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    stmt.run(
+      role ?? existing.role,
+      is_active ?? existing.is_active,
+      name ?? existing.name,
+      req.params.id
+    );
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete user (admin only)
+app.delete('/api/users/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ USER PERMISSIONS ============
+
+// Get permissions for a user
+app.get('/api/users/:id/permissions', (req, res) => {
+  try {
+    const permissions = db.prepare('SELECT * FROM user_permissions WHERE user_id = ?').all(req.params.id);
+    res.json(permissions);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get permission for current user by email and module
+app.get('/api/permissions/check', (req, res) => {
+  try {
+    const { email, module } = req.query;
+    if (!email || !module) {
+      return res.status(400).json({ message: 'Email and module are required' });
+    }
+
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    if (!user) {
+      return res.json({ permission: 'none' });
+    }
+
+    // Admin users have full access
+    if (user.role === 'admin') {
+      return res.json({ permission: 'admin', isAdmin: true });
+    }
+
+    const permission = db.prepare('SELECT * FROM user_permissions WHERE user_id = ? AND module = ?').get(user.id, module);
+    res.json({
+      permission: permission ? permission.permission : 'none',
+      isAdmin: false
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Set permission for a user
+app.put('/api/users/:id/permissions', (req, res) => {
+  try {
+    const { module, permission } = req.body;
+    if (!module || !permission) {
+      return res.status(400).json({ message: 'Module and permission are required' });
+    }
+
+    const validPermissions = ['none', 'viewer', 'editor', 'admin'];
+    if (!validPermissions.includes(permission)) {
+      return res.status(400).json({ message: 'Invalid permission level' });
+    }
+
+    const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (permission === 'none') {
+      // Remove permission
+      db.prepare('DELETE FROM user_permissions WHERE user_id = ? AND module = ?').run(req.params.id, module);
+    } else {
+      // Upsert permission
+      db.prepare(`
+        INSERT INTO user_permissions (user_id, module, permission)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, module) DO UPDATE SET permission = ?, updated_at = CURRENT_TIMESTAMP
+      `).run(req.params.id, module, permission, permission);
+    }
+
+    const permissions = db.prepare('SELECT * FROM user_permissions WHERE user_id = ?').all(req.params.id);
+    res.json(permissions);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ INSTRUMENT ROUTES ============
+
+// Get all instruments with thumbnail
+app.get('/api/instruments', (req, res) => {
+  try {
+    const instruments = getAllInstrumentsWithThumbnail();
+    res.json(instruments);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get single instrument with all images
+app.get('/api/instruments/:id', (req, res) => {
+  try {
+    const instrument = getInstrumentWithImages(req.params.id);
+    if (!instrument) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+    res.json(instrument);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create instrument
+app.post('/api/instruments', (req, res) => {
+  try {
+    const { name, serial_number, category, manufacturer, model, status, location, purchase_date, calibration_date, notes } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: 'Name is required' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO instruments (name, serial_number, category, manufacturer, model, status, location, purchase_date, calibration_date, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      name,
+      serial_number || null,
+      category || null,
+      manufacturer || null,
+      model || null,
+      status || 'active',
+      location || null,
+      purchase_date || null,
+      calibration_date || null,
+      notes || null
+    );
+
+    const instrument = getInstrumentWithImages(result.lastInsertRowid);
+    res.status(201).json(instrument);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update instrument
+app.put('/api/instruments/:id', (req, res) => {
+  try {
+    const { name, serial_number, category, manufacturer, model, status, location, purchase_date, calibration_date, notes } = req.body;
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    const stmt = db.prepare(`
+      UPDATE instruments
+      SET name = ?, serial_number = ?, category = ?, manufacturer = ?, model = ?, status = ?, location = ?, purchase_date = ?, calibration_date = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    stmt.run(
+      name ?? existing.name,
+      serial_number ?? existing.serial_number,
+      category ?? existing.category,
+      manufacturer ?? existing.manufacturer,
+      model ?? existing.model,
+      status ?? existing.status,
+      location ?? existing.location,
+      purchase_date ?? existing.purchase_date,
+      calibration_date ?? existing.calibration_date,
+      notes ?? existing.notes,
+      req.params.id
+    );
+
+    const instrument = getInstrumentWithImages(req.params.id);
+    res.json(instrument);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add image to instrument
+app.post('/api/instruments/:id/images', (req, res) => {
+  try {
+    const { image } = req.body; // Base64 encoded image
+    if (!image) {
+      return res.status(400).json({ message: 'Image is required' });
+    }
+
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    // Extract base64 data and file type
+    const matches = image.match(/^data:image\/(\w+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ message: 'Invalid image format' });
+    }
+
+    const ext = matches[1];
+    const data = matches[2];
+    const buffer = Buffer.from(data, 'base64');
+    const filename = `instrument_${req.params.id}_${Date.now()}.${ext}`;
+    const filepath = join(uploadsDir, filename);
+
+    writeFileSync(filepath, buffer);
+
+    const imagePath = `/uploads/${filename}`;
+
+    // Get max sort order
+    const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM instrument_images WHERE instrument_id = ?').get(req.params.id);
+    const sortOrder = (maxOrder?.max ?? -1) + 1;
+
+    db.prepare('INSERT INTO instrument_images (instrument_id, image_path, sort_order) VALUES (?, ?, ?)').run(req.params.id, imagePath, sortOrder);
+    db.prepare('UPDATE instruments SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
+
+    const instrument = getInstrumentWithImages(req.params.id);
+    res.json(instrument);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete specific image
+app.delete('/api/instruments/:id/images/:imageId', (req, res) => {
+  try {
+    const image = db.prepare('SELECT * FROM instrument_images WHERE id = ? AND instrument_id = ?').get(req.params.imageId, req.params.id);
+    if (!image) {
+      return res.status(404).json({ message: 'Image not found' });
+    }
+
+    // Delete file
+    const imagePath = join(__dirname, image.image_path);
+    if (existsSync(imagePath)) {
+      unlinkSync(imagePath);
+    }
+
+    db.prepare('DELETE FROM instrument_images WHERE id = ?').run(req.params.imageId);
+    db.prepare('UPDATE instruments SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
+
+    const instrument = getInstrumentWithImages(req.params.id);
+    res.json(instrument);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Reorder images
+app.put('/api/instruments/:id/images/reorder', (req, res) => {
+  try {
+    const { imageIds } = req.body; // Array of image IDs in new order
+    if (!Array.isArray(imageIds)) {
+      return res.status(400).json({ message: 'imageIds array is required' });
+    }
+
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    const updateStmt = db.prepare('UPDATE instrument_images SET sort_order = ? WHERE id = ? AND instrument_id = ?');
+    imageIds.forEach((imageId, index) => {
+      updateStmt.run(index, imageId, req.params.id);
+    });
+
+    db.prepare('UPDATE instruments SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.params.id);
+
+    const instrument = getInstrumentWithImages(req.params.id);
+    res.json(instrument);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ INSTRUMENT DOCUMENTS ============
+
+// Get documents for instrument
+app.get('/api/instruments/:id/documents', (req, res) => {
+  try {
+    const documents = db.prepare('SELECT * FROM instrument_documents WHERE instrument_id = ? ORDER BY created_at DESC').all(req.params.id);
+    res.json(documents);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Upload document
+app.post('/api/instruments/:id/documents', (req, res) => {
+  try {
+    const { name, file, fileType, fileSize, uploadedBy } = req.body;
+    if (!file || !name) {
+      return res.status(400).json({ message: 'File and name are required' });
+    }
+
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    // Extract base64 data
+    const matches = file.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ message: 'Invalid file format' });
+    }
+
+    const data = matches[2];
+    const buffer = Buffer.from(data, 'base64');
+    const ext = name.split('.').pop() || 'bin';
+    const filename = `doc_${req.params.id}_${Date.now()}.${ext}`;
+    const filepath = join(uploadsDir, filename);
+
+    writeFileSync(filepath, buffer);
+
+    const filePath = `/uploads/${filename}`;
+
+    const stmt = db.prepare('INSERT INTO instrument_documents (instrument_id, name, file_path, file_type, file_size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(req.params.id, name, filePath, fileType || null, fileSize || buffer.length, uploadedBy || null);
+
+    // Add history entry
+    db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by) VALUES (?, ?, ?, ?)').run(
+      req.params.id,
+      'document_added',
+      `Document "${name}" was uploaded`,
+      uploadedBy || null
+    );
+
+    const document = db.prepare('SELECT * FROM instrument_documents WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(document);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update document
+app.put('/api/instruments/:id/documents/:docId', (req, res) => {
+  try {
+    const { name, updatedBy } = req.body;
+    const doc = db.prepare('SELECT * FROM instrument_documents WHERE id = ? AND instrument_id = ?').get(req.params.docId, req.params.id);
+
+    if (!doc) {
+      return res.status(404).json({ message: 'Document not found' });
+    }
+
+    db.prepare('UPDATE instrument_documents SET name = ? WHERE id = ?').run(name || doc.name, req.params.docId);
+
+    // Add history entry
+    db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by) VALUES (?, ?, ?, ?)').run(
+      req.params.id,
+      'document_updated',
+      `Document renamed to "${name}"`,
+      updatedBy || null
+    );
+
+    const document = db.prepare('SELECT * FROM instrument_documents WHERE id = ?').get(req.params.docId);
+    res.json(document);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete document
+app.delete('/api/instruments/:id/documents/:docId', (req, res) => {
+  try {
+    const doc = db.prepare('SELECT * FROM instrument_documents WHERE id = ? AND instrument_id = ?').get(req.params.docId, req.params.id);
+    if (!doc) {
+      return res.status(404).json({ message: 'Document not found' });
+    }
+
+    // Delete file
+    const docPath = join(__dirname, doc.file_path);
+    if (existsSync(docPath)) {
+      unlinkSync(docPath);
+    }
+
+    const docName = doc.name;
+    db.prepare('DELETE FROM instrument_documents WHERE id = ?').run(req.params.docId);
+
+    // Add history entry
+    db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by) VALUES (?, ?, ?, ?)').run(
+      req.params.id,
+      'document_deleted',
+      `Document "${docName}" was deleted`,
+      req.query.deletedBy || null
+    );
+
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ INSTRUMENT HISTORY ============
+
+// Get history for instrument
+app.get('/api/instruments/:id/history', (req, res) => {
+  try {
+    const history = db.prepare('SELECT * FROM instrument_history WHERE instrument_id = ? ORDER BY created_at DESC').all(req.params.id);
+    res.json(history);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add history entry
+app.post('/api/instruments/:id/history', (req, res) => {
+  try {
+    const { action, description, changedBy, changes } = req.body;
+    if (!action) {
+      return res.status(400).json({ message: 'Action is required' });
+    }
+
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    const stmt = db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by, changes) VALUES (?, ?, ?, ?, ?)');
+    const result = stmt.run(req.params.id, action, description || null, changedBy || null, changes ? JSON.stringify(changes) : null);
+
+    const entry = db.prepare('SELECT * FROM instrument_history WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(entry);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ INSTRUMENT LINKS ============
+
+// Get links for instrument
+app.get('/api/instruments/:id/links', (req, res) => {
+  try {
+    const links = db.prepare('SELECT * FROM instrument_links WHERE instrument_id = ? ORDER BY created_at DESC').all(req.params.id);
+    res.json(links);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add link
+app.post('/api/instruments/:id/links', (req, res) => {
+  try {
+    const { title, url, linkType, description, createdBy } = req.body;
+    if (!title || !url) {
+      return res.status(400).json({ message: 'Title and URL are required' });
+    }
+
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    const stmt = db.prepare('INSERT INTO instrument_links (instrument_id, title, url, link_type, description, created_by) VALUES (?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(req.params.id, title, url, linkType || 'website', description || null, createdBy || null);
+
+    // Add history entry
+    db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by) VALUES (?, ?, ?, ?)').run(
+      req.params.id,
+      'link_added',
+      `Link "${title}" was added`,
+      createdBy || null
+    );
+
+    const link = db.prepare('SELECT * FROM instrument_links WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(link);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update link
+app.put('/api/instruments/:id/links/:linkId', (req, res) => {
+  try {
+    const { title, url, linkType, description, updatedBy } = req.body;
+    const link = db.prepare('SELECT * FROM instrument_links WHERE id = ? AND instrument_id = ?').get(req.params.linkId, req.params.id);
+
+    if (!link) {
+      return res.status(404).json({ message: 'Link not found' });
+    }
+
+    db.prepare(`
+      UPDATE instrument_links
+      SET title = ?, url = ?, link_type = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      title || link.title,
+      url || link.url,
+      linkType || link.link_type,
+      description !== undefined ? description : link.description,
+      req.params.linkId
+    );
+
+    // Add history entry
+    db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by) VALUES (?, ?, ?, ?)').run(
+      req.params.id,
+      'link_updated',
+      `Link "${title || link.title}" was updated`,
+      updatedBy || null
+    );
+
+    const updated = db.prepare('SELECT * FROM instrument_links WHERE id = ?').get(req.params.linkId);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete link
+app.delete('/api/instruments/:id/links/:linkId', (req, res) => {
+  try {
+    const link = db.prepare('SELECT * FROM instrument_links WHERE id = ? AND instrument_id = ?').get(req.params.linkId, req.params.id);
+    if (!link) {
+      return res.status(404).json({ message: 'Link not found' });
+    }
+
+    const linkTitle = link.title;
+    db.prepare('DELETE FROM instrument_links WHERE id = ?').run(req.params.linkId);
+
+    // Add history entry
+    db.prepare('INSERT INTO instrument_history (instrument_id, action, description, changed_by) VALUES (?, ?, ?, ?)').run(
+      req.params.id,
+      'link_deleted',
+      `Link "${linkTitle}" was deleted`,
+      req.query.deletedBy || null
+    );
+
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete instrument
+app.delete('/api/instruments/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM instruments WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Instrument not found' });
+    }
+
+    // Delete all images
+    const images = db.prepare('SELECT * FROM instrument_images WHERE instrument_id = ?').all(req.params.id);
+    for (const image of images) {
+      const imagePath = join(__dirname, image.image_path);
+      if (existsSync(imagePath)) {
+        unlinkSync(imagePath);
+      }
+    }
+
+    db.prepare('DELETE FROM instrument_images WHERE instrument_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM instruments WHERE id = ?').run(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ PRODUCTION ROUTES ============
+
+// Get all productions
+app.get('/api/productions', (req, res) => {
+  try {
+    const productions = db.prepare('SELECT * FROM productions ORDER BY created_at DESC').all();
+    res.json(productions);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get single production
+app.get('/api/productions/:id', (req, res) => {
+  try {
+    const production = db.prepare('SELECT * FROM productions WHERE id = ?').get(req.params.id);
+    if (!production) {
+      return res.status(404).json({ message: 'Production not found' });
+    }
+    res.json(production);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create production
+app.post('/api/productions', (req, res) => {
+  try {
+    const { name, description, quantity, status } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: 'Name is required' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO productions (name, description, quantity, status)
+      VALUES (?, ?, ?, ?)
+    `);
+    const result = stmt.run(name, description || null, quantity || 0, status || 'pending');
+
+    const production = db.prepare('SELECT * FROM productions WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(production);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update production
+app.put('/api/productions/:id', (req, res) => {
+  try {
+    const { name, description, quantity, status } = req.body;
+    const existing = db.prepare('SELECT * FROM productions WHERE id = ?').get(req.params.id);
+
+    if (!existing) {
+      return res.status(404).json({ message: 'Production not found' });
+    }
+
+    const stmt = db.prepare(`
+      UPDATE productions
+      SET name = ?, description = ?, quantity = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    stmt.run(
+      name ?? existing.name,
+      description ?? existing.description,
+      quantity ?? existing.quantity,
+      status ?? existing.status,
+      req.params.id
+    );
+
+    const production = db.prepare('SELECT * FROM productions WHERE id = ?').get(req.params.id);
+    res.json(production);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete production
+app.delete('/api/productions/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM productions WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Production not found' });
+    }
+
+    db.prepare('DELETE FROM productions WHERE id = ?').run(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ MODULAR API ROUTES ============
+
+// Helper function to get record with all related data (images, documents, history, links, companies)
+function getRecordWithRelatedData(moduleId, recordId) {
+  const record = db.prepare('SELECT * FROM records WHERE id = ? AND module_id = ?').get(recordId, moduleId);
+  if (record) {
+    // Parse data JSON
+    if (record.data) {
+      record.data = JSON.parse(record.data);
+    }
+
+    // Get images
+    record.images = db.prepare('SELECT * FROM record_images WHERE record_id = ? AND module_id = ? ORDER BY sort_order, id').all(recordId, moduleId);
+
+    // Get documents
+    record.documents = db.prepare('SELECT * FROM record_documents WHERE record_id = ? AND module_id = ? ORDER BY created_at DESC').all(recordId, moduleId);
+
+    // Get history
+    record.history = db.prepare('SELECT * FROM record_history WHERE record_id = ? AND module_id = ? ORDER BY created_at DESC').all(recordId, moduleId);
+
+    // Get links
+    record.links = db.prepare('SELECT * FROM record_links WHERE record_id = ? AND module_id = ? ORDER BY created_at DESC').all(recordId, moduleId);
+
+    // Get companies
+    record.companies = db.prepare(`
+      SELECT c.*, rc.relationship_type
+      FROM companies c
+      JOIN record_companies rc ON c.id = rc.company_id
+      WHERE rc.record_id = ? AND rc.module_id = ?
+    `).all(recordId, moduleId);
+  }
+  return record;
+}
+
+// Alias for backwards compatibility
+function getRecordWithImages(moduleId, recordId) {
+  return getRecordWithRelatedData(moduleId, recordId);
+}
+
+// Get all modules
+app.get('/api/modules', (req, res) => {
+  try {
+    const modules = db.prepare('SELECT * FROM modules WHERE is_active = 1 ORDER BY display_name').all();
+    modules.forEach(m => {
+      if (m.config) m.config = JSON.parse(m.config);
+    });
+    res.json(modules);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get module by name
+app.get('/api/modules/:name', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.name);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+    if (module.config) module.config = JSON.parse(module.config);
+
+    // Get fields
+    module.fields = db.prepare('SELECT * FROM module_fields WHERE module_id = ? ORDER BY sort_order').all(module.id);
+    module.fields.forEach(f => {
+      if (f.options) f.options = JSON.parse(f.options);
+    });
+
+    res.json(module);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create module
+app.post('/api/modules', (req, res) => {
+  try {
+    const { name, displayName, description, icon, config, menuId, fields } = req.body;
+    if (!name || !displayName) {
+      return res.status(400).json({ message: 'Name and displayName are required' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO modules (name, display_name, description, icon, config, menu_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(name, displayName, description || null, icon || null, config ? JSON.stringify(config) : null, menuId || null);
+
+    // Add fields if provided
+    if (fields && Array.isArray(fields)) {
+      const insertField = db.prepare(`
+        INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      fields.forEach((field, index) => {
+        insertField.run(
+          result.lastInsertRowid,
+          field.name,
+          field.displayName || field.name,
+          field.fieldType || 'text',
+          field.isRequired ? 1 : 0,
+          field.options ? JSON.stringify(field.options) : null,
+          field.defaultValue || null,
+          field.relationModule || null,
+          field.warningYellowDays || null,
+          field.warningRedDays || null,
+          field.warningMode || 'overdue',
+          field.sortOrder ?? index
+        );
+      });
+    }
+
+    const module = db.prepare('SELECT * FROM modules WHERE id = ?').get(result.lastInsertRowid);
+    if (module.config) module.config = JSON.parse(module.config);
+
+    // Include fields in the response
+    module.fields = db.prepare('SELECT * FROM module_fields WHERE module_id = ? ORDER BY sort_order').all(module.id);
+    module.fields.forEach(f => {
+      if (f.options) f.options = JSON.parse(f.options);
+    });
+
+    res.status(201).json(module);
+  } catch (error) {
+    console.error('Error creating module:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ GENERIC RECORD ROUTES ============
+
+// Get all records for a module
+app.get('/api/m/:moduleName/records', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const records = db.prepare('SELECT * FROM records WHERE module_id = ? ORDER BY created_at DESC').all(module.id);
+    records.forEach(r => {
+      if (r.data) r.data = JSON.parse(r.data);
+      // Get thumbnail
+      const firstImage = db.prepare('SELECT image_path FROM record_images WHERE record_id = ? ORDER BY sort_order, id LIMIT 1').get(r.id);
+      r.thumbnail = firstImage ? firstImage.image_path : null;
+      // Get all images
+      r.images = db.prepare('SELECT * FROM record_images WHERE record_id = ? ORDER BY sort_order, id').all(r.id);
+    });
+
+    res.json(records);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get single record
+app.get('/api/m/:moduleName/records/:id', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const record = getRecordWithImages(module.id, req.params.id);
+    if (!record) {
+      return res.status(404).json({ message: 'Record not found' });
+    }
+
+    res.json(record);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create record
+app.post('/api/m/:moduleName/records', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const { name, data, status, createdBy } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: 'Name is required' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO records (module_id, name, data, status, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      module.id,
+      name,
+      data ? JSON.stringify(data) : null,
+      status || 'active',
+      createdBy || null,
+      createdBy || null
+    );
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, result.lastInsertRowid, 'created', `${name} was created`, createdBy || null
+    );
+
+    const record = getRecordWithImages(module.id, result.lastInsertRowid);
+    res.status(201).json(record);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update record
+app.put('/api/m/:moduleName/records/:id', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM records WHERE id = ? AND module_id = ?').get(req.params.id, module.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Record not found' });
+    }
+
+    const { name, data, status, updatedBy } = req.body;
+
+    const stmt = db.prepare(`
+      UPDATE records
+      SET name = ?, data = ?, status = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    stmt.run(
+      name ?? existing.name,
+      data ? JSON.stringify(data) : existing.data,
+      status ?? existing.status,
+      updatedBy || existing.updated_by,
+      req.params.id
+    );
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'updated', `${name || existing.name} was updated`, updatedBy || null
+    );
+
+    const record = getRecordWithImages(module.id, req.params.id);
+    res.json(record);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete record
+app.delete('/api/m/:moduleName/records/:id', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM records WHERE id = ? AND module_id = ?').get(req.params.id, module.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Record not found' });
+    }
+
+    // Delete all images files
+    const images = db.prepare('SELECT * FROM record_images WHERE record_id = ?').all(req.params.id);
+    for (const image of images) {
+      const imagePath = join(__dirname, image.image_path);
+      if (existsSync(imagePath)) {
+        unlinkSync(imagePath);
+      }
+    }
+
+    // Delete all documents files
+    const docs = db.prepare('SELECT * FROM record_documents WHERE record_id = ?').all(req.params.id);
+    for (const doc of docs) {
+      const docPath = join(__dirname, doc.file_path);
+      if (existsSync(docPath)) {
+        unlinkSync(docPath);
+      }
+    }
+
+    db.prepare('DELETE FROM records WHERE id = ?').run(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ GENERIC RECORD IMAGES ============
+
+// Add image to record
+app.post('/api/m/:moduleName/records/:id/images', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM records WHERE id = ? AND module_id = ?').get(req.params.id, module.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Record not found' });
+    }
+
+    const { image, createdBy } = req.body;
+    if (!image) {
+      return res.status(400).json({ message: 'Image is required' });
+    }
+
+    const matches = image.match(/^data:image\/(\w+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ message: 'Invalid image format' });
+    }
+
+    const ext = matches[1];
+    const data = matches[2];
+    const buffer = Buffer.from(data, 'base64');
+    const filename = `${req.params.moduleName}_${req.params.id}_${Date.now()}.${ext}`;
+    const filepath = join(uploadsDir, filename);
+
+    writeFileSync(filepath, buffer);
+
+    const imagePath = `/uploads/${filename}`;
+    const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM record_images WHERE record_id = ?').get(req.params.id);
+    const sortOrder = (maxOrder?.max ?? -1) + 1;
+
+    db.prepare('INSERT INTO record_images (module_id, record_id, image_path, sort_order, created_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, imagePath, sortOrder, createdBy || null
+    );
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'image_added', 'Image was added', createdBy || null
+    );
+
+    const record = getRecordWithImages(module.id, req.params.id);
+    res.status(201).json(record);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete image from record
+app.delete('/api/m/:moduleName/records/:id/images/:imageId', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const image = db.prepare('SELECT * FROM record_images WHERE id = ? AND record_id = ?').get(req.params.imageId, req.params.id);
+    if (!image) {
+      return res.status(404).json({ message: 'Image not found' });
+    }
+
+    const imagePath = join(__dirname, image.image_path);
+    if (existsSync(imagePath)) {
+      unlinkSync(imagePath);
+    }
+
+    db.prepare('DELETE FROM record_images WHERE id = ?').run(req.params.imageId);
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'image_deleted', 'Image was deleted', req.query.deletedBy || null
+    );
+
+    const record = getRecordWithImages(module.id, req.params.id);
+    res.json(record);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Reorder images (set primary)
+app.put('/api/m/:moduleName/records/:id/images/reorder', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const { imageIds } = req.body;
+    if (!imageIds || !Array.isArray(imageIds)) {
+      return res.status(400).json({ message: 'imageIds array is required' });
+    }
+
+    // Update display_order for each image
+    imageIds.forEach((imageId, index) => {
+      db.prepare('UPDATE record_images SET display_order = ? WHERE id = ? AND record_id = ?').run(index, imageId, req.params.id);
+    });
+
+    // Update thumbnail to the first image
+    const firstImage = db.prepare('SELECT * FROM record_images WHERE id = ?').get(imageIds[0]);
+    if (firstImage) {
+      db.prepare('UPDATE records SET thumbnail = ? WHERE id = ?').run(firstImage.image_path, req.params.id);
+    }
+
+    const record = getRecordWithImages(module.id, req.params.id);
+    res.json(record);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ GENERIC RECORD DOCUMENTS ============
+
+// Get documents
+app.get('/api/m/:moduleName/records/:id/documents', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const docs = db.prepare('SELECT * FROM record_documents WHERE record_id = ? AND module_id = ? ORDER BY created_at DESC').all(req.params.id, module.id);
+    res.json(docs);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add document
+app.post('/api/m/:moduleName/records/:id/documents', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const existing = db.prepare('SELECT * FROM records WHERE id = ? AND module_id = ?').get(req.params.id, module.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Record not found' });
+    }
+
+    const { name, file, fileType, fileSize, uploadedBy } = req.body;
+    if (!name || !file) {
+      return res.status(400).json({ message: 'Name and file are required' });
+    }
+
+    const matches = file.match(/^data:(.+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ message: 'Invalid file format' });
+    }
+
+    const data = matches[2];
+    const buffer = Buffer.from(data, 'base64');
+    const ext = name.split('.').pop() || 'bin';
+    const filename = `doc_${req.params.moduleName}_${req.params.id}_${Date.now()}.${ext}`;
+    const filepath = join(uploadsDir, filename);
+
+    writeFileSync(filepath, buffer);
+
+    const stmt = db.prepare('INSERT INTO record_documents (module_id, record_id, name, file_path, file_type, file_size, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(module.id, req.params.id, name, `/uploads/${filename}`, fileType || null, fileSize || buffer.length, uploadedBy || null);
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'document_added', `Document "${name}" was added`, uploadedBy || null
+    );
+
+    const doc = db.prepare('SELECT * FROM record_documents WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(doc);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete document
+app.delete('/api/m/:moduleName/records/:id/documents/:docId', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const doc = db.prepare('SELECT * FROM record_documents WHERE id = ? AND record_id = ?').get(req.params.docId, req.params.id);
+    if (!doc) {
+      return res.status(404).json({ message: 'Document not found' });
+    }
+
+    const docPath = join(__dirname, doc.file_path);
+    if (existsSync(docPath)) {
+      unlinkSync(docPath);
+    }
+
+    db.prepare('DELETE FROM record_documents WHERE id = ?').run(req.params.docId);
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'document_deleted', `Document "${doc.name}" was deleted`, req.query.deletedBy || null
+    );
+
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ GENERIC RECORD HISTORY ============
+
+// Get history
+app.get('/api/m/:moduleName/records/:id/history', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const history = db.prepare('SELECT * FROM record_history WHERE record_id = ? AND module_id = ? ORDER BY created_at DESC').all(req.params.id, module.id);
+    res.json(history);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add history entry
+app.post('/api/m/:moduleName/records/:id/history', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const { action, description, changedBy, changes } = req.body;
+    if (!action) {
+      return res.status(400).json({ message: 'Action is required' });
+    }
+
+    const stmt = db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by, changes) VALUES (?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(module.id, req.params.id, action, description || null, changedBy || null, changes ? JSON.stringify(changes) : null);
+
+    const entry = db.prepare('SELECT * FROM record_history WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(entry);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ GENERIC RECORD LINKS ============
+
+// Get links
+app.get('/api/m/:moduleName/records/:id/links', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const links = db.prepare('SELECT * FROM record_links WHERE record_id = ? AND module_id = ? ORDER BY created_at DESC').all(req.params.id, module.id);
+    res.json(links);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add link
+app.post('/api/m/:moduleName/records/:id/links', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const { title, url, linkType, description, createdBy } = req.body;
+    if (!title || !url) {
+      return res.status(400).json({ message: 'Title and URL are required' });
+    }
+
+    const stmt = db.prepare('INSERT INTO record_links (module_id, record_id, title, url, link_type, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    const result = stmt.run(module.id, req.params.id, title, url, linkType || 'website', description || null, createdBy || null);
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'link_added', `Link "${title}" was added`, createdBy || null
+    );
+
+    const link = db.prepare('SELECT * FROM record_links WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(link);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update link
+app.put('/api/m/:moduleName/records/:id/links/:linkId', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const link = db.prepare('SELECT * FROM record_links WHERE id = ? AND record_id = ?').get(req.params.linkId, req.params.id);
+    if (!link) {
+      return res.status(404).json({ message: 'Link not found' });
+    }
+
+    const { title, url, linkType, description, updatedBy } = req.body;
+
+    db.prepare(`
+      UPDATE record_links
+      SET title = ?, url = ?, link_type = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      title || link.title,
+      url || link.url,
+      linkType || link.link_type,
+      description !== undefined ? description : link.description,
+      req.params.linkId
+    );
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'link_updated', `Link "${title || link.title}" was updated`, updatedBy || null
+    );
+
+    const updated = db.prepare('SELECT * FROM record_links WHERE id = ?').get(req.params.linkId);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete link
+app.delete('/api/m/:moduleName/records/:id/links/:linkId', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const link = db.prepare('SELECT * FROM record_links WHERE id = ? AND record_id = ?').get(req.params.linkId, req.params.id);
+    if (!link) {
+      return res.status(404).json({ message: 'Link not found' });
+    }
+
+    db.prepare('DELETE FROM record_links WHERE id = ?').run(req.params.linkId);
+
+    // Add history entry
+    db.prepare('INSERT INTO record_history (module_id, record_id, action, description, changed_by) VALUES (?, ?, ?, ?, ?)').run(
+      module.id, req.params.id, 'link_deleted', `Link "${link.title}" was deleted`, req.query.deletedBy || null
+    );
+
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ COMPANIES ============
+
+// Get all companies
+app.get('/api/companies', (req, res) => {
+  try {
+    const companies = db.prepare('SELECT * FROM companies WHERE is_active = 1 ORDER BY name').all();
+    res.json(companies);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get single company
+app.get('/api/companies/:id', (req, res) => {
+  try {
+    const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
+    if (!company) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+    res.json(company);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create company
+app.post('/api/companies', (req, res) => {
+  try {
+    const { name, type, address, city, country, phone, email, website, notes } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: 'Name is required' });
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO companies (name, type, address, city, country, phone, email, website, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(name, type || null, address || null, city || null, country || null, phone || null, email || null, website || null, notes || null);
+
+    const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(company);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update company
+app.put('/api/companies/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+
+    const { name, type, address, city, country, phone, email, website, notes, isActive } = req.body;
+
+    db.prepare(`
+      UPDATE companies
+      SET name = ?, type = ?, address = ?, city = ?, country = ?, phone = ?, email = ?, website = ?, notes = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      name ?? existing.name,
+      type ?? existing.type,
+      address ?? existing.address,
+      city ?? existing.city,
+      country ?? existing.country,
+      phone ?? existing.phone,
+      email ?? existing.email,
+      website ?? existing.website,
+      notes ?? existing.notes,
+      isActive !== undefined ? (isActive ? 1 : 0) : existing.is_active,
+      req.params.id
+    );
+
+    const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
+    res.json(company);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete company
+app.delete('/api/companies/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+
+    db.prepare('DELETE FROM companies WHERE id = ?').run(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Link company to record
+app.post('/api/m/:moduleName/records/:id/companies', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const { companyId, relationshipType } = req.body;
+    if (!companyId) {
+      return res.status(400).json({ message: 'Company ID is required' });
+    }
+
+    const stmt = db.prepare('INSERT OR REPLACE INTO record_companies (module_id, record_id, company_id, relationship_type) VALUES (?, ?, ?, ?)');
+    stmt.run(module.id, req.params.id, companyId, relationshipType || 'default');
+
+    const companies = db.prepare(`
+      SELECT c.*, rc.relationship_type
+      FROM companies c
+      JOIN record_companies rc ON c.id = rc.company_id
+      WHERE rc.record_id = ? AND rc.module_id = ?
+    `).all(req.params.id, module.id);
+
+    res.json(companies);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get companies linked to record
+app.get('/api/m/:moduleName/records/:id/companies', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const companies = db.prepare(`
+      SELECT c.*, rc.relationship_type
+      FROM companies c
+      JOIN record_companies rc ON c.id = rc.company_id
+      WHERE rc.record_id = ? AND rc.module_id = ?
+    `).all(req.params.id, module.id);
+
+    res.json(companies);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Remove company from record
+app.delete('/api/m/:moduleName/records/:id/companies/:companyId', (req, res) => {
+  try {
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.moduleName);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    db.prepare('DELETE FROM record_companies WHERE record_id = ? AND company_id = ? AND module_id = ?').run(
+      req.params.id, req.params.companyId, module.id
+    );
+
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ MENU ROUTES ============
+
+// Helper function to build menu tree
+function buildMenuTree(items, parentId = null) {
+  return items
+    .filter(item => item.parent_id === parentId)
+    .map(item => ({
+      ...item,
+      children: buildMenuTree(items, item.id)
+    }))
+    .sort((a, b) => a.sort_order - b.sort_order);
+}
+
+// Get all menu items as tree (includes linked modules)
+app.get('/api/menu', (req, res) => {
+  try {
+    const items = db.prepare('SELECT * FROM menu_items WHERE is_active = 1 ORDER BY sort_order').all();
+
+    // Get all active modules with their menu_id
+    const modules = db.prepare('SELECT id, name, display_name, menu_id, icon FROM modules WHERE is_active = 1 AND menu_id IS NOT NULL').all();
+
+    // Add modules as virtual menu items under their parent menu
+    // Use negative IDs to avoid conflicts with real menu items
+    modules.forEach(module => {
+      items.push({
+        id: -module.id, // Negative ID to distinguish from real menu items
+        name: module.name,
+        display_name: module.display_name,
+        icon: module.icon || 'CubeIcon',
+        path: `/records/${module.name}`,
+        parent_id: module.menu_id,
+        sort_order: 100 + module.id, // Put modules after regular menu items
+        is_active: 1,
+        required_role: null,
+        is_module: true,
+      });
+    });
+
+    const tree = buildMenuTree(items);
+    res.json(tree);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get all menu items (flat list for admin)
+app.get('/api/menu/all', (req, res) => {
+  try {
+    const items = db.prepare('SELECT * FROM menu_items ORDER BY sort_order').all();
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get single menu item
+app.get('/api/menu/:id', (req, res) => {
+  try {
+    const item = db.prepare('SELECT * FROM menu_items WHERE id = ?').get(req.params.id);
+    if (!item) {
+      return res.status(404).json({ message: 'Menu item not found' });
+    }
+    // Get children
+    item.children = db.prepare('SELECT * FROM menu_items WHERE parent_id = ? ORDER BY sort_order').all(item.id);
+    res.json(item);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Create menu item
+app.post('/api/menu', (req, res) => {
+  try {
+    const { name, displayName, icon, path, parentId, sortOrder, isActive, requiredRole } = req.body;
+    if (!name || !displayName) {
+      return res.status(400).json({ message: 'Name and displayName are required' });
+    }
+
+    // Get max sort order if not provided
+    let order = sortOrder;
+    if (order === undefined) {
+      const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM menu_items WHERE parent_id IS ?').get(parentId || null);
+      order = (maxOrder?.max ?? -1) + 1;
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      name,
+      displayName,
+      icon || null,
+      path || null,
+      parentId || null,
+      order,
+      isActive !== false ? 1 : 0,
+      requiredRole || null
+    );
+
+    const item = db.prepare('SELECT * FROM menu_items WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(item);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Reorder menu items - MUST be before /api/menu/:id to avoid :id catching "reorder"
+app.put('/api/menu/reorder', (req, res) => {
+  try {
+    console.log('Reorder request body:', JSON.stringify(req.body, null, 2));
+    const { items } = req.body; // Array of { id, sortOrder, parentId }
+    if (!Array.isArray(items)) {
+      return res.status(400).json({ message: 'Items array is required' });
+    }
+
+    const updateStmt = db.prepare('UPDATE menu_items SET sort_order = ?, parent_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+    for (const item of items) {
+      console.log('Updating item:', item.id, 'sortOrder:', item.sortOrder, 'parentId:', item.parentId);
+      updateStmt.run(item.sortOrder, item.parentId || null, item.id);
+    }
+
+    const allItems = db.prepare('SELECT * FROM menu_items WHERE is_active = 1 ORDER BY sort_order').all();
+    const tree = buildMenuTree(allItems);
+    res.json(tree);
+  } catch (error) {
+    console.error('Reorder error:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update menu item
+app.put('/api/menu/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM menu_items WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Menu item not found' });
+    }
+
+    const { name, displayName, icon, path, parentId, sortOrder, isActive, requiredRole } = req.body;
+
+    // Handle null values explicitly - null means clear the field, undefined means keep existing
+    const newIcon = icon === null ? null : (icon !== undefined ? icon : existing.icon);
+    const newPath = path === null ? null : (path !== undefined ? path : existing.path);
+    const newRequiredRole = requiredRole === null ? null : (requiredRole !== undefined ? requiredRole : existing.required_role);
+
+    db.prepare(`
+      UPDATE menu_items
+      SET name = ?, display_name = ?, icon = ?, path = ?, parent_id = ?, sort_order = ?, is_active = ?, required_role = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      name ?? existing.name,
+      displayName ?? existing.display_name,
+      newIcon,
+      newPath,
+      parentId !== undefined ? parentId : existing.parent_id,
+      sortOrder ?? existing.sort_order,
+      isActive !== undefined ? (isActive ? 1 : 0) : existing.is_active,
+      newRequiredRole,
+      req.params.id
+    );
+
+    const item = db.prepare('SELECT * FROM menu_items WHERE id = ?').get(req.params.id);
+    item.children = db.prepare('SELECT * FROM menu_items WHERE parent_id = ? ORDER BY sort_order').all(item.id);
+    res.json(item);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete menu item
+app.delete('/api/menu/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM menu_items WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ message: 'Menu item not found' });
+    }
+
+    // Check if any modules reference this menu item
+    const modulesUsingMenu = db.prepare('SELECT COUNT(*) as count FROM modules WHERE menu_id = ?').get(req.params.id);
+    if (modulesUsingMenu.count > 0) {
+      return res.status(400).json({ message: 'Cannot delete menu item that is used by modules. Remove the menu association from modules first.' });
+    }
+
+    db.prepare('DELETE FROM menu_items WHERE id = ?').run(req.params.id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// ============ UPDATE MODULE ROUTES TO INCLUDE MENU ============
+
+// Update module to link/unlink menu and update fields
+app.put('/api/modules/:name', (req, res) => {
+  try {
+    console.log('Updating module:', req.params.name, 'with body:', JSON.stringify(req.body, null, 2));
+    const module = db.prepare('SELECT * FROM modules WHERE name = ?').get(req.params.name);
+    if (!module) {
+      return res.status(404).json({ message: 'Module not found' });
+    }
+
+    const { displayName, description, icon, config, menuId, isActive, fields } = req.body;
+
+    db.prepare(`
+      UPDATE modules
+      SET display_name = ?, description = ?, icon = ?, config = ?, menu_id = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      displayName ?? module.display_name,
+      description !== undefined ? description : module.description,
+      icon !== undefined ? icon : module.icon,
+      config ? JSON.stringify(config) : module.config,
+      menuId !== undefined ? menuId : module.menu_id,
+      isActive !== undefined ? (isActive ? 1 : 0) : module.is_active,
+      module.id
+    );
+
+    // Update fields if provided
+    if (fields && Array.isArray(fields)) {
+      // Get existing fields
+      const existingFields = db.prepare('SELECT id, name FROM module_fields WHERE module_id = ?').all(module.id);
+      const newFieldNames = fields.filter(f => f.name && f.displayName).map(f => f.name);
+
+      // Delete fields that are no longer present
+      for (const field of existingFields) {
+        if (!newFieldNames.includes(field.name)) {
+          db.prepare('DELETE FROM module_fields WHERE id = ?').run(field.id);
+        }
+      }
+
+      // Update or insert fields
+      fields.forEach((field, index) => {
+        if (field.name && field.displayName) {
+          const existingField = db.prepare('SELECT id FROM module_fields WHERE module_id = ? AND name = ?').get(module.id, field.name);
+
+          if (existingField) {
+            // Update existing field
+            db.prepare(`
+              UPDATE module_fields
+              SET display_name = ?, field_type = ?, is_required = ?, options = ?, default_value = ?, relation_module = ?, warning_yellow_days = ?, warning_red_days = ?, warning_mode = ?, sort_order = ?
+              WHERE id = ?
+            `).run(
+              field.displayName,
+              field.fieldType || 'text',
+              field.isRequired ? 1 : 0,
+              field.options ? JSON.stringify(field.options) : null,
+              field.defaultValue || null,
+              field.relationModule || null,
+              field.warningYellowDays || null,
+              field.warningRedDays || null,
+              field.warningMode || 'overdue',
+              field.sortOrder ?? index,
+              existingField.id
+            );
+          } else {
+            // Insert new field
+            db.prepare(`
+              INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              module.id,
+              field.name,
+              field.displayName,
+              field.fieldType || 'text',
+              field.isRequired ? 1 : 0,
+              field.options ? JSON.stringify(field.options) : null,
+              field.defaultValue || null,
+              field.relationModule || null,
+              field.warningYellowDays || null,
+              field.warningRedDays || null,
+              field.warningMode || 'overdue',
+              field.sortOrder ?? index
+            );
+          }
+        }
+      });
+    }
+
+    const updated = db.prepare('SELECT * FROM modules WHERE id = ?').get(module.id);
+    if (updated.config) updated.config = JSON.parse(updated.config);
+    updated.fields = db.prepare('SELECT * FROM module_fields WHERE module_id = ? ORDER BY sort_order').all(updated.id);
+    updated.fields.forEach(f => {
+      if (f.options) f.options = JSON.parse(f.options);
+    });
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating module:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});

@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+:root {
+  /* Theme color variables */
+  --theme-sidebar-bg: #1e293b;
+  --theme-sidebar-border: #334155;
+  --theme-sidebar-hover: #334155;
+  --theme-accent: #2563eb;
+  --theme-accent-hover: #1d4ed8;
+  --theme-accent-light: #60a5fa;
+}
+
+/* Theme presets */
+[data-theme="blue"] {
+  --theme-sidebar-bg: #1e293b;
+  --theme-sidebar-border: #334155;
+  --theme-sidebar-hover: #334155;
+  --theme-accent: #2563eb;
+  --theme-accent-hover: #1d4ed8;
+  --theme-accent-light: #60a5fa;
+}
+
+[data-theme="green"] {
+  --theme-sidebar-bg: #14532d;
+  --theme-sidebar-border: #166534;
+  --theme-sidebar-hover: #166534;
+  --theme-accent: #16a34a;
+  --theme-accent-hover: #15803d;
+  --theme-accent-light: #4ade80;
+}
+
+[data-theme="purple"] {
+  --theme-sidebar-bg: #3b0764;
+  --theme-sidebar-border: #581c87;
+  --theme-sidebar-hover: #581c87;
+  --theme-accent: #9333ea;
+  --theme-accent-hover: #7e22ce;
+  --theme-accent-light: #c084fc;
+}
+
+[data-theme="red"] {
+  --theme-sidebar-bg: #450a0a;
+  --theme-sidebar-border: #7f1d1d;
+  --theme-sidebar-hover: #7f1d1d;
+  --theme-accent: #dc2626;
+  --theme-accent-hover: #b91c1c;
+  --theme-accent-light: #f87171;
+}
+
+[data-theme="orange"] {
+  --theme-sidebar-bg: #431407;
+  --theme-sidebar-border: #7c2d12;
+  --theme-sidebar-hover: #7c2d12;
+  --theme-accent: #ea580c;
+  --theme-accent-hover: #c2410c;
+  --theme-accent-light: #fb923c;
+}
+
+[data-theme="teal"] {
+  --theme-sidebar-bg: #042f2e;
+  --theme-sidebar-border: #134e4a;
+  --theme-sidebar-hover: #134e4a;
+  --theme-accent: #0d9488;
+  --theme-accent-hover: #0f766e;
+  --theme-accent-light: #2dd4bf;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Theme-aware navigation styles */
+.nav-link {
+  @apply flex items-center gap-3 px-4 py-3 rounded-lg transition-colors;
+  color: rgba(203, 213, 225, 1);
+}
+
+.nav-link:hover {
+  background-color: var(--theme-sidebar-hover);
+  color: white;
+}
+
+.nav-link.active {
+  background-color: var(--theme-accent);
+  color: white;
+}
+
+.nav-link-sub {
+  @apply flex items-center gap-3 px-4 py-2 rounded-lg transition-colors;
+  color: rgba(148, 163, 184, 1);
+}
+
+.nav-link-sub:hover {
+  background-color: var(--theme-sidebar-hover);
+  color: white;
+}
+
+.nav-link-sub.active {
+  background-color: var(--theme-accent);
+  color: white;
+}
+
+.nav-group-btn {
+  @apply flex items-center justify-between w-full px-4 py-3 rounded-lg transition-colors;
+  color: rgba(203, 213, 225, 1);
+}
+
+.nav-group-btn:hover {
+  background-color: var(--theme-sidebar-hover);
+  color: white;
+}
+
+.sidebar-btn {
+  @apply flex items-center gap-2 w-full px-4 py-2 text-sm rounded-lg transition-colors;
+  color: rgba(203, 213, 225, 1);
+}
+
+.sidebar-btn:hover {
+  background-color: var(--theme-sidebar-hover);
+  color: white;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Toast animation */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
+/* Mobile responsive utilities */
+@media (max-width: 768px) {
+  /* Reduce padding on mobile */
+  .p-8 {
+    padding: 1rem;
+  }
+
+  /* Stack flex containers vertically on mobile */
+  .mobile-stack {
+    flex-direction: column;
+  }
+
+  /* Full width buttons on mobile */
+  .mobile-full {
+    width: 100%;
+  }
+}
+
+/* Tiptap Editor Styles */
+.tiptap {
+  outline: none;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  color: #adb5bd;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.tiptap h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0.75rem 0;
+}
+
+.tiptap h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0.5rem 0;
+}
+
+.tiptap h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0.5rem 0;
+}
+
+.tiptap p {
+  margin: 0.5rem 0;
+}
+
+.tiptap ul,
+.tiptap ol {
+  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+}
+
+.tiptap ul {
+  list-style-type: disc;
+}
+
+.tiptap ol {
+  list-style-type: decimal;
+}
+
+.tiptap li {
+  margin: 0.25rem 0;
+}
+
+.tiptap blockquote {
+  border-left: 3px solid #e5e7eb;
+  padding-left: 1rem;
+  margin: 0.5rem 0;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.tiptap hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 1rem 0;
+}
+
+.tiptap strong {
+  font-weight: 700;
+}
+
+.tiptap em {
+  font-style: italic;
+}
+
+.tiptap s {
+  text-decoration: line-through;
+}
+
+.tiptap code {
+  background-color: #f3f4f6;
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.875em;
+}
+
+.tiptap pre {
+  background-color: #1f2937;
+  color: #f9fafb;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+
+.tiptap pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
