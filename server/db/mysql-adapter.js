@@ -26,12 +26,13 @@ export class MySQLAdapter extends DatabaseAdapter {
   }
 
   async connect() {
+    console.log('MySQLAdapter.connect() - config:', JSON.stringify(this.config, null, 2));
     if (typeof this.config === 'string') {
       // Connection string
       this.pool = mysql.createPool(this.config);
     } else {
       // Config object
-      this.pool = mysql.createPool({
+      const poolConfig = {
         host: this.config.host || 'localhost',
         port: this.config.port || 3306,
         database: this.config.database,
@@ -42,7 +43,18 @@ export class MySQLAdapter extends DatabaseAdapter {
         queueLimit: 0,
         // Handle MySQL's different date handling
         dateStrings: true,
-      });
+      };
+
+      // Enable SSL for Azure MySQL (detect by hostname) or if MYSQL_SSL is set
+      const isAzureMySQL = poolConfig.host && poolConfig.host.includes('.mysql.database.azure.com');
+      if (this.config.ssl || process.env.MYSQL_SSL === 'true' || isAzureMySQL) {
+        poolConfig.ssl = {
+          rejectUnauthorized: false
+        };
+        console.log('MySQL SSL enabled for host:', poolConfig.host);
+      }
+
+      this.pool = mysql.createPool(poolConfig);
     }
 
     // Test connection
