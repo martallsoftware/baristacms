@@ -583,9 +583,9 @@ export async function seedDefaultData(db) {
     const passwordHash = await bcrypt.hash('admin', 10);
     await db.run(`
       INSERT INTO users (email, name, role, is_active, auth_type, password_hash, must_change_password)
-      VALUES ('admin', 'Administrator', 'admin', 1, 'local', ?, 1)
+      VALUES ('admin@baristacms.com', 'Administrator', 'admin', 1, 'local', ?, 1)
     `, [passwordHash]);
-    console.log('Default admin user created (email: admin, password: admin)');
+    console.log('Default admin user created (email: admin@baristacms.com, password: admin)');
   }
 }
 
