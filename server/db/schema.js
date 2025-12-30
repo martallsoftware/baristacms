@@ -43,7 +43,7 @@ export async function initializeSchema(db) {
 
   // ============ MENU TABLES ============
 
-  // Menu items table
+  // Menu items table (must be before modules and user_groups tables)
   await db.exec(`
     CREATE TABLE IF NOT EXISTS menu_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +64,7 @@ export async function initializeSchema(db) {
 
   // ============ MODULAR SYSTEM TABLES ============
 
-  // Modules table
+  // Modules table (must be before group_module_access)
   await db.exec(`
     CREATE TABLE IF NOT EXISTS modules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +80,61 @@ export async function initializeSchema(db) {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (menu_id) REFERENCES menu_items(id) ON DELETE SET NULL,
       FOREIGN KEY (parent_module_id) REFERENCES modules(id) ON DELETE SET NULL
+    )
+  `);
+
+  // ============ USER GROUPS TABLES ============
+
+  // User groups table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS user_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      display_name TEXT NOT NULL,
+      description TEXT,
+      color TEXT,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // User group members table (many-to-many: users <-> groups)
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS user_group_members (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      group_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+      UNIQUE(user_id, group_id)
+    )
+  `);
+
+  // Group module access table (many-to-many: groups <-> modules)
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS group_module_access (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL,
+      module_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+      FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE,
+      UNIQUE(group_id, module_id)
+    )
+  `);
+
+  // Group to menu item access (many-to-many)
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS group_menu_access (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL,
+      menu_item_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+      FOREIGN KEY (menu_item_id) REFERENCES menu_items(id) ON DELETE CASCADE,
+      UNIQUE(group_id, menu_item_id)
     )
   `);
 
@@ -357,6 +412,12 @@ async function runMigrations(db) {
     await db.safeAddColumn('dashboards', 'require_auth', 'INTEGER DEFAULT 1');
     await db.safeAddColumn('dashboards', 'layout', 'TEXT');
     await db.safeAddColumn('modules', 'use_in_app', 'INTEGER DEFAULT 0');
+    await db.safeAddColumn('module_fields', 'show_in_list', 'INTEGER DEFAULT 1');
+
+    // Local authentication support
+    await db.safeAddColumn('users', 'auth_type', "VARCHAR(10) DEFAULT 'm365'");  // 'm365' or 'local'
+    await db.safeAddColumn('users', 'password_hash', 'VARCHAR(255)');  // Only for local users (bcrypt hash)
+    await db.safeAddColumn('users', 'must_change_password', 'INTEGER DEFAULT 0');  // Force password change on first login
   }
 
   // Migration: Change record_links.url to LONGTEXT for MySQL to handle long URLs
@@ -422,6 +483,24 @@ async function runMigrations(db) {
     }
   } catch (error) {
     console.log('Migration note: Basic Pages menu item check failed:', error.message);
+  }
+
+  // Migration: Add Groups menu item if it doesn't exist
+  try {
+    const groupsMenuItem = await db.get("SELECT id FROM menu_items WHERE name = 'groups'");
+    if (!groupsMenuItem) {
+      // Find the Administration menu item
+      const adminMenu = await db.get("SELECT id FROM menu_items WHERE name = 'administration'");
+      if (adminMenu) {
+        await db.run(`
+          INSERT INTO menu_items (name, display_name, icon, path, parent_id, sort_order, is_active, required_role)
+          VALUES ('groups', 'Groups', 'UserGroupIcon', '/admin/groups', ?, 2, 1, 'admin')
+        `, [adminMenu.id]);
+        console.log('Migration: Added Groups menu item');
+      }
+    }
+  } catch (error) {
+    console.log('Migration note: Groups menu item check failed:', error.message);
   }
 }
 

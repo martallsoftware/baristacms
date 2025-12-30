@@ -108,8 +108,8 @@ const getIcon = (iconName?: string): React.ComponentType<{ className?: string }>
 };
 
 export default function Layout() {
-  const { instance, accounts } = useMsal();
-  const { user, isAdmin, isManager, loading, photoUrl } = useUser();
+  const { accounts } = useMsal();
+  const { user, isAdmin, isManager, loading, photoUrl, logout } = useUser();
   const account = accounts[0];
   const location = useLocation();
   const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
@@ -179,7 +179,7 @@ export default function Layout() {
   };
 
   const handleLogout = () => {
-    instance.logoutRedirect();
+    logout();
   };
 
   const toggleGroup = (groupName: string) => {
@@ -399,18 +399,18 @@ export default function Layout() {
             {photoUrl ? (
               <img
                 src={photoUrl}
-                alt={account?.name || 'User'}
+                alt={user?.name || account?.name || 'User'}
                 className="w-10 h-10 rounded-full object-cover"
               />
             ) : (
               <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold" style={{ backgroundColor: 'var(--theme-accent)' }}>
-                {account?.name?.charAt(0) || 'U'}
+                {(user?.name || account?.name)?.charAt(0) || 'U'}
               </div>
             )}
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">{account?.name || 'User'}</p>
+              <p className="text-sm font-medium truncate">{user?.name || account?.name || 'User'}</p>
               <div className="flex items-center gap-2">
-                <p className="text-xs text-slate-400 truncate">{account?.username || ''}</p>
+                <p className="text-xs text-slate-400 truncate">{user?.email || account?.username || ''}</p>
                 {!loading && user && (
                   <span
                     className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium text-white ${getRoleBadgeColor(
