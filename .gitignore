@@ -17,6 +17,10 @@ dist-ssr
 *.db
 server/*.db
 
+# Remove file with ending
+*.zip
+server/*.zip
+
 # Uploaded files (user data)
 server/uploads/*
 !server/uploads/.gitkeep
