@@ -40,6 +40,14 @@ docker-compose logs -f
 - **Backend API:** http://localhost:3001 (or your configured BACKEND_PORT)
 - **MySQL:** localhost:3306
 
+### 4. Login
+
+Default admin account (created on fresh install):
+- **Email:** admin@baristacms.com
+- **Password:** admin
+
+You will be prompted to change the password on first login.
+
 ## Services
 
 ### MySQL Database
