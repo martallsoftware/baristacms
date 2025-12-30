@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { MsalProvider, AuthenticatedTemplate, UnauthenticatedTemplate, useMsal } from '@azure/msal-react';
-import { PublicClientApplication, EventType } from '@azure/msal-browser';
+import { MsalProvider, useMsal } from '@azure/msal-react';
+import { PublicClientApplication, EventType, InteractionStatus } from '@azure/msal-browser';
 import type { AuthenticationResult, EventMessage } from '@azure/msal-browser';
 import { msalConfig } from './config/authConfig';
 import { UserProvider } from './context/UserContext';
 import { ToastProvider } from './context/ToastContext';
 import { ThemeProvider } from './context/ThemeContext';
+import { localAuthService } from './services/api';
 import Layout from './components/Layout';
 import LoginPage from './components/LoginPage';
+import ChangePasswordPage from './components/ChangePasswordPage';
 import Home from './pages/Home';
 import Users from './pages/admin/Users';
 import Settings from './pages/admin/Settings';
@@ -18,6 +20,7 @@ import Pages from './pages/admin/Pages';
 import Dashboards from './pages/admin/Dashboards';
 import BasicPages from './pages/admin/BasicPages';
 import BasicPageEdit from './pages/admin/BasicPageEdit';
+import Groups from './pages/admin/Groups';
 import DashboardView from './pages/DashboardView';
 import BasicPageView from './pages/BasicPageView';
 import RecordsList from './pages/records/RecordsList';
@@ -56,14 +59,135 @@ msalInstance.initialize().then(() => {
   });
 });
 
-function AuthStatus() {
+// Public routes that don't require authentication
+function PublicRoutes() {
+  return (
+    <Routes>
+      <Route path="form/:slug" element={<QuickAddForm />} />
+      <Route path="dashboard/:slug" element={<DashboardView />} />
+      <Route path="page/:slug" element={<BasicPageView />} />
+    </Routes>
+  );
+}
+
+// Protected routes that require authentication
+function ProtectedRoutes() {
+  return (
+    <UserProvider>
+      <ThemeProvider>
+        <ToastProvider>
+          <Routes>
+            <Route path="/" element={<Layout />}>
+              <Route index element={<Home />} />
+              <Route path="admin/modules" element={<Modules />} />
+              <Route path="admin/menu" element={<Menu />} />
+              <Route path="admin/pages" element={<Pages />} />
+              <Route path="admin/dashboards" element={<Dashboards />} />
+              <Route path="admin/basic-pages" element={<BasicPages />} />
+              <Route path="admin/basic-pages/:id" element={<BasicPageEdit />} />
+              <Route path="admin/users" element={<Users />} />
+              <Route path="admin/groups" element={<Groups />} />
+              <Route path="admin/settings" element={<Settings />} />
+              <Route path="records/:moduleName" element={<RecordsList />} />
+              <Route path="records/:moduleName/:id" element={<RecordEdit />} />
+              <Route path="dashboard/:slug" element={<DashboardView />} />
+              <Route path="page/:slug" element={<BasicPageView />} />
+            </Route>
+            <Route path="form/:slug" element={<QuickAddForm />} />
+          </Routes>
+        </ToastProvider>
+      </ThemeProvider>
+    </UserProvider>
+  );
+}
+
+// Main app content with auth check
+function AppContent() {
   const { accounts, inProgress } = useMsal();
+  const [localAuthValid, setLocalAuthValid] = useState<boolean | null>(null);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
+  // Check local auth on mount
   useEffect(() => {
-    console.log('Auth status - accounts:', accounts, 'inProgress:', inProgress);
-  }, [accounts, inProgress]);
+    const checkLocalAuth = async () => {
+      const token = localAuthService.getToken();
+      if (token) {
+        try {
+          const result = await localAuthService.verifyToken(token);
+          setLocalAuthValid(result.valid);
+        } catch {
+          localAuthService.removeToken();
+          setLocalAuthValid(false);
+        }
+      } else {
+        setLocalAuthValid(false);
+      }
+      setCheckingAuth(false);
+    };
 
-  return null;
+    checkLocalAuth();
+  }, []);
+
+  // Handle local login
+  const handleLocalLogin = useCallback((token: string, changePassword: boolean) => {
+    localAuthService.saveToken(token);
+    setLocalAuthValid(true);
+    setMustChangePassword(changePassword);
+  }, []);
+
+  // Handle local logout
+  const handleLocalLogout = useCallback(() => {
+    localAuthService.removeToken();
+    setLocalAuthValid(false);
+    setMustChangePassword(false);
+  }, []);
+
+  // Handle password changed
+  const handlePasswordChanged = useCallback(() => {
+    setMustChangePassword(false);
+  }, []);
+
+  // Log auth status
+  useEffect(() => {
+    console.log('Auth status - M365 accounts:', accounts.length, 'localAuth:', localAuthValid, 'inProgress:', inProgress);
+  }, [accounts, localAuthValid, inProgress]);
+
+  // Still checking auth
+  if (checkingAuth || inProgress !== InteractionStatus.None) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+      </div>
+    );
+  }
+
+  // Check if authenticated (either M365 or local)
+  const isM365Authenticated = accounts.length > 0;
+  const isLocalAuthenticated = localAuthValid === true;
+  const isAuthenticated = isM365Authenticated || isLocalAuthenticated;
+
+  // Check for public routes first
+  const currentPath = window.location.pathname;
+  const isPublicRoute = currentPath.startsWith('/form/') ||
+    currentPath.startsWith('/dashboard/') ||
+    currentPath.startsWith('/page/');
+
+  if (isPublicRoute && !isAuthenticated) {
+    return <PublicRoutes />;
+  }
+
+  // If authenticated with local and must change password
+  if (isLocalAuthenticated && mustChangePassword) {
+    return <ChangePasswordPage onPasswordChanged={handlePasswordChanged} onLogout={handleLocalLogout} />;
+  }
+
+  // Show login or protected routes
+  if (!isAuthenticated) {
+    return <LoginPage onLocalLogin={handleLocalLogin} />;
+  }
+
+  return <ProtectedRoutes />;
 }
 
 function App() {
@@ -86,42 +210,8 @@ function App() {
 
   return (
     <MsalProvider instance={msalInstance}>
-      <AuthStatus />
       <BrowserRouter>
-        <AuthenticatedTemplate>
-          <UserProvider>
-            <ThemeProvider>
-            <ToastProvider>
-            <Routes>
-              <Route path="/" element={<Layout />}>
-                <Route index element={<Home />} />
-                <Route path="admin/modules" element={<Modules />} />
-                <Route path="admin/menu" element={<Menu />} />
-                <Route path="admin/pages" element={<Pages />} />
-                <Route path="admin/dashboards" element={<Dashboards />} />
-                <Route path="admin/basic-pages" element={<BasicPages />} />
-                <Route path="admin/basic-pages/:id" element={<BasicPageEdit />} />
-                <Route path="admin/users" element={<Users />} />
-                <Route path="admin/settings" element={<Settings />} />
-                <Route path="records/:moduleName" element={<RecordsList />} />
-                <Route path="records/:moduleName/:id" element={<RecordEdit />} />
-                <Route path="dashboard/:slug" element={<DashboardView />} />
-                <Route path="page/:slug" element={<BasicPageView />} />
-              </Route>
-              <Route path="form/:slug" element={<QuickAddForm />} />
-            </Routes>
-            </ToastProvider>
-            </ThemeProvider>
-          </UserProvider>
-        </AuthenticatedTemplate>
-        <UnauthenticatedTemplate>
-          <Routes>
-            <Route path="form/:slug" element={<QuickAddForm />} />
-            <Route path="dashboard/:slug" element={<DashboardView />} />
-            <Route path="page/:slug" element={<BasicPageView />} />
-            <Route path="*" element={<LoginPage />} />
-          </Routes>
-        </UnauthenticatedTemplate>
+        <AppContent />
       </BrowserRouter>
     </MsalProvider>
   );

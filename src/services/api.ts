@@ -40,12 +40,16 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
 export type UserRole = 'user' | 'manager' | 'admin';
 export type PermissionLevel = 'none' | 'viewer' | 'editor' | 'admin';
 
+export type AuthType = 'm365' | 'local';
+
 export interface User {
   id: number;
   email: string;
   name: string;
   role: UserRole;
   is_active: number;
+  auth_type?: AuthType;
+  must_change_password?: number;
   created_at: string;
   updated_at: string;
 }
@@ -118,6 +122,177 @@ export const userService = {
   async checkPermission(email: string, module: string): Promise<PermissionCheck> {
     const response = await authFetch(`${API_URL}/permissions/check?email=${encodeURIComponent(email)}&module=${encodeURIComponent(module)}`);
     return handleResponse<PermissionCheck>(response);
+  },
+
+  async create(data: { email: string; name: string; role?: UserRole; password?: string }): Promise<User> {
+    const response = await authFetch(`${API_URL}/users`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleResponse<User>(response);
+  },
+
+  async resetPassword(id: number, password: string): Promise<{ success: boolean; message: string }> {
+    const response = await authFetch(`${API_URL}/users/${id}/reset-password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password }),
+    });
+    return handleResponse<{ success: boolean; message: string }>(response);
+  },
+};
+
+// ============ LOCAL AUTH TYPES ============
+
+export interface LoginResponse {
+  token: string;
+  user: User;
+  mustChangePassword: boolean;
+}
+
+export interface ChangePasswordResponse {
+  message: string;
+}
+
+// ============ LOCAL AUTH SERVICE ============
+
+export const localAuthService = {
+  async login(email: string, password: string): Promise<LoginResponse> {
+    const response = await fetch(`${API_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    return handleResponse<LoginResponse>(response);
+  },
+
+  async changePassword(token: string, currentPassword: string | null, newPassword: string): Promise<ChangePasswordResponse> {
+    const response = await fetch(`${API_URL}/auth/change-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    return handleResponse<ChangePasswordResponse>(response);
+  },
+
+  async verifyToken(token: string): Promise<{ valid: boolean; user?: User }> {
+    const response = await fetch(`${API_URL}/auth/verify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    return handleResponse<{ valid: boolean; user?: User }>(response);
+  },
+
+  // Store token in localStorage
+  saveToken(token: string): void {
+    localStorage.setItem('local_auth_token', token);
+  },
+
+  // Get token from localStorage
+  getToken(): string | null {
+    return localStorage.getItem('local_auth_token');
+  },
+
+  // Remove token from localStorage
+  removeToken(): void {
+    localStorage.removeItem('local_auth_token');
+  },
+
+  // Check if user is logged in with local auth
+  isLoggedIn(): boolean {
+    return !!this.getToken();
+  },
+};
+
+// ============ USER GROUPS TYPES ============
+
+export interface UserGroup {
+  id: number;
+  name: string;
+  display_name: string;
+  description?: string;
+  color?: string;
+  is_active: number;
+  member_count?: number;
+  module_count?: number;
+  menu_item_count?: number;
+  members?: User[];
+  modules?: Module[];
+  menuItems?: MenuItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+// ============ USER GROUPS SERVICE ============
+
+export const groupService = {
+  async getAll(): Promise<UserGroup[]> {
+    const response = await authFetch(`${API_URL}/groups`);
+    return handleResponse<UserGroup[]>(response);
+  },
+
+  async getById(id: number): Promise<UserGroup> {
+    const response = await authFetch(`${API_URL}/groups/${id}`);
+    return handleResponse<UserGroup>(response);
+  },
+
+  async create(data: { name: string; displayName: string; description?: string; color?: string }): Promise<UserGroup> {
+    const response = await authFetch(`${API_URL}/groups`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleResponse<UserGroup>(response);
+  },
+
+  async update(id: number, data: { displayName?: string; description?: string; color?: string; isActive?: boolean }): Promise<UserGroup> {
+    const response = await authFetch(`${API_URL}/groups/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+    return handleResponse<UserGroup>(response);
+  },
+
+  async delete(id: number): Promise<void> {
+    const response = await authFetch(`${API_URL}/groups/${id}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      throw new Error('Failed to delete group');
+    }
+  },
+
+  async updateMembers(id: number, userIds: number[]): Promise<{ members: User[] }> {
+    const response = await authFetch(`${API_URL}/groups/${id}/members`, {
+      method: 'PUT',
+      body: JSON.stringify({ userIds }),
+    });
+    return handleResponse<{ members: User[] }>(response);
+  },
+
+  async updateModules(id: number, moduleIds: number[]): Promise<{ modules: Module[] }> {
+    const response = await authFetch(`${API_URL}/groups/${id}/modules`, {
+      method: 'PUT',
+      body: JSON.stringify({ moduleIds }),
+    });
+    return handleResponse<{ modules: Module[] }>(response);
+  },
+
+  async updateMenuItems(id: number, menuItemIds: number[]): Promise<{ menuItems: MenuItem[] }> {
+    const response = await authFetch(`${API_URL}/groups/${id}/menu-items`, {
+      method: 'PUT',
+      body: JSON.stringify({ menuItemIds }),
+    });
+    return handleResponse<{ menuItems: MenuItem[] }>(response);
+  },
+
+  async getUserGroups(userId: number): Promise<UserGroup[]> {
+    const response = await authFetch(`${API_URL}/groups/user/${userId}`);
+    return handleResponse<UserGroup[]>(response);
   },
 };
 
@@ -248,6 +423,7 @@ export interface ModuleField {
   warning_mode?: DateWarningMode; // For date fields: 'overdue' (deadline) or 'predate' (start date)
   sort_order: number;
   weight?: number;  // Weight for custom sorting (1-99, lower = first)
+  show_in_list?: number;  // Whether to show this field in the records list/grid (1 = show, 0 = hide)
   created_at: string;
 }
 

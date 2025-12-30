@@ -31,6 +31,8 @@ import { createPrintQueueRoutes } from './routes/printQueue.js';
 import { createPageTemplateRoutes } from './routes/pageTemplates.js';
 import { createDashboardRoutes } from './routes/dashboards.js';
 import { createBasicPagesRoutes } from './routes/basic-pages.js';
+import { createGroupRoutes } from './routes/groups.js';
+import { createLocalAuthRoutes } from './routes/localAuth.js';
 import { startEmailProcessor } from './services/emailProcessor.js';
 import emailInboxRoutes from './routes/emailInbox.js';
 
@@ -73,8 +75,23 @@ app.get('/api/health', (req, res) => {
 let publicSettingsHandler = (req, res) => res.status(503).json({ message: 'Server starting...' });
 app.get('/api/settings/public/:key', (req, res) => publicSettingsHandler(req, res));
 
-// Apply authentication to all /api routes (except health check and public settings)
-app.use('/api', authenticateWithBypass);
+// Local auth routes (no auth required) - configured after database connection
+let localAuthRouter = null;
+app.use('/api/auth', (req, res, next) => {
+  if (localAuthRouter) {
+    return localAuthRouter(req, res, next);
+  }
+  res.status(503).json({ message: 'Server starting...' });
+});
+
+// Apply authentication to all /api routes (except health check, public settings, and auth)
+app.use('/api', (req, res, next) => {
+  // Skip auth for /api/auth routes
+  if (req.path.startsWith('/auth')) {
+    return next();
+  }
+  return authenticateWithBypass(req, res, next);
+});
 
 // Initialize database and start server
 async function startServer() {
@@ -92,6 +109,9 @@ async function startServer() {
     // Store db and uploadsDir in app.locals for routes that need it
     app.locals.db = db;
     app.locals.uploadsDir = uploadsDir;
+
+    // Configure local auth routes now that db is available
+    localAuthRouter = createLocalAuthRoutes(db);
 
     // Configure public settings handler now that db is available
     publicSettingsHandler = async (req, res) => {
@@ -126,6 +146,7 @@ async function startServer() {
     app.use('/api/page-templates', createPageTemplateRoutes(db));
     app.use('/api/dashboards', createDashboardRoutes(db));
     app.use('/api/basic-pages', createBasicPagesRoutes(db, uploadsDir));
+    app.use('/api/groups', createGroupRoutes(db));
     app.use('/api/email-inbox', emailInboxRoutes);
 
     // Start email processor if configured

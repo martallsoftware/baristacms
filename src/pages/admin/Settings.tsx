@@ -132,7 +132,7 @@ export default function SettingsPage() {
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2" style={{ borderColor: 'var(--theme-accent)' }}></div>
       </div>
     );
   }
@@ -181,7 +181,8 @@ export default function SettingsPage() {
               value={siteName}
               onChange={(e) => setSiteName(e.target.value)}
               placeholder="Enter site name..."
-              className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:border-transparent"
+              style={{ '--tw-ring-color': 'var(--theme-accent)' } as React.CSSProperties}
             />
             <p className="mt-1 text-sm text-gray-500">
               The name displayed in the application header and browser title.
@@ -202,7 +203,10 @@ export default function SettingsPage() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ backgroundColor: 'var(--theme-accent)' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent)'}
           >
             {saving ? (
               <>
@@ -274,7 +278,10 @@ export default function SettingsPage() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ backgroundColor: 'var(--theme-accent)' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent)'}
           >
             {saving ? (
               <>
@@ -313,7 +320,8 @@ export default function SettingsPage() {
               onChange={(e) => setEmailCheckInterval(e.target.value)}
               min="0"
               max="60"
-              className="w-32 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-32 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:border-transparent"
+              style={{ '--tw-ring-color': 'var(--theme-accent)' } as React.CSSProperties}
             />
             <p className="mt-1 text-sm text-gray-500">
               How often to check for new emails and automatically create records. Set to 0 to disable.
@@ -342,7 +350,10 @@ export default function SettingsPage() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ backgroundColor: 'var(--theme-accent)' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent)'}
           >
             {saving ? (
               <>
@@ -376,7 +387,8 @@ export default function SettingsPage() {
                 type="checkbox"
                 checked={enableDebugLogging}
                 onChange={(e) => setEnableDebugLogging(e.target.checked)}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-5 w-5"
+                className="rounded border-gray-300 h-5 w-5"
+                style={{ accentColor: 'var(--theme-accent)' }}
               />
               <div>
                 <span className="text-sm font-medium text-gray-700">Enable Debug Logging</span>
@@ -401,7 +413,10 @@ export default function SettingsPage() {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ backgroundColor: 'var(--theme-accent)' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--theme-accent)'}
           >
             {saving ? (
               <>

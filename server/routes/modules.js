@@ -21,10 +21,42 @@ export function createModuleRoutes(db) {
     }
   });
 
-  // Get modules enabled for mobile app
+  // Get modules enabled for mobile app (filtered by user group access)
   router.get('/app', async (req, res) => {
     try {
-      const modules = await db.all('SELECT * FROM modules WHERE is_active = 1 AND use_in_app = 1 ORDER BY display_name');
+      const email = req.user?.email;
+      const authType = req.user?.authType || 'm365';
+      let userRole = 'user';
+      let userId = null;
+
+      if (email) {
+        // Use case-insensitive email match, filtering by auth_type for local users
+        let user;
+        if (authType === 'local') {
+          user = await db.get("SELECT id, role FROM users WHERE LOWER(email) = LOWER(?) AND auth_type = 'local'", [email]);
+        } else {
+          user = await db.get('SELECT id, role FROM users WHERE LOWER(email) = LOWER(?)', [email]);
+        }
+        if (user) {
+          userRole = user.role;
+          userId = user.id;
+        }
+      }
+
+      let modules = await db.all('SELECT * FROM modules WHERE is_active = 1 AND use_in_app = 1 ORDER BY display_name');
+
+      // Filter by group access (unless user is admin)
+      if (userRole !== 'admin' && userId) {
+        const accessibleModules = await db.all(`
+          SELECT DISTINCT gma.module_id
+          FROM group_module_access gma
+          INNER JOIN user_group_members ugm ON ugm.group_id = gma.group_id
+          WHERE ugm.user_id = ?
+        `, [userId]);
+        const accessibleModuleIds = new Set(accessibleModules.map(m => m.module_id));
+        modules = modules.filter(m => accessibleModuleIds.has(m.id));
+      }
+
       modules.forEach(m => {
         if (m.config) m.config = JSON.parse(m.config);
       });
@@ -72,8 +104,8 @@ export function createModuleRoutes(db) {
 
       // Always add a default "description" field (textarea) at sort_order 0, weight 50
       await db.run(`
-        INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order, weight)
-        VALUES (?, 'description', 'Description', 'textarea', 0, NULL, NULL, NULL, NULL, NULL, 'overdue', 0, 50)
+        INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order, weight, show_in_list)
+        VALUES (?, 'description', 'Description', 'textarea', 0, NULL, NULL, NULL, NULL, NULL, 'overdue', 0, 50, 0)
       `, [moduleId]);
 
       // Add additional fields if provided (starting at sort_order 1)
@@ -84,8 +116,8 @@ export function createModuleRoutes(db) {
           if (field.name === 'description') continue;
 
           await db.run(`
-            INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order, weight)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order, weight, show_in_list)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `, [
             moduleId,
             field.name,
@@ -99,7 +131,8 @@ export function createModuleRoutes(db) {
             field.warningRedDays || null,
             field.warningMode || 'overdue',
             (field.sortOrder ?? index) + 1,  // Offset by 1 since description is at 0
-            field.weight ?? 50  // Default weight is 50
+            field.weight ?? 50,  // Default weight is 50
+            field.showInList !== false ? 1 : 0  // Default to showing in list
           ]);
         }
       }
@@ -160,7 +193,7 @@ export function createModuleRoutes(db) {
             // Update existing field
             await db.run(`
               UPDATE module_fields
-              SET display_name = ?, field_type = ?, is_required = ?, options = ?, default_value = ?, relation_module = ?, warning_yellow_days = ?, warning_red_days = ?, warning_mode = ?, sort_order = ?, weight = ?
+              SET display_name = ?, field_type = ?, is_required = ?, options = ?, default_value = ?, relation_module = ?, warning_yellow_days = ?, warning_red_days = ?, warning_mode = ?, sort_order = ?, weight = ?, show_in_list = ?
               WHERE id = ?
             `, [
               field.displayName || field.name,
@@ -174,13 +207,14 @@ export function createModuleRoutes(db) {
               field.warningMode || 'overdue',
               field.sortOrder ?? index,
               field.weight ?? 50,
+              field.showInList !== false ? 1 : 0,
               existingId
             ]);
           } else {
             // Insert new field
             await db.run(`
-              INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order, weight)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              INSERT INTO module_fields (module_id, name, display_name, field_type, is_required, options, default_value, relation_module, warning_yellow_days, warning_red_days, warning_mode, sort_order, weight, show_in_list)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
               module.id,
               field.name,
@@ -194,7 +228,8 @@ export function createModuleRoutes(db) {
               field.warningRedDays || null,
               field.warningMode || 'overdue',
               field.sortOrder ?? index,
-              field.weight ?? 50
+              field.weight ?? 50,
+              field.showInList !== false ? 1 : 0
             ]);
           }
         }

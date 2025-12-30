@@ -57,32 +57,74 @@ export function createMenuRoutes(db) {
     }
   });
 
-  // Get menu for current user (filtered by role) - returns tree structure
+  // Get menu for current user (filtered by role and group access) - returns tree structure
   router.get('/', async (req, res) => {
     try {
       const email = req.user?.email;
+      const authType = req.user?.authType || 'm365';
       let userRole = 'user';
+      let userId = null;
 
       if (email) {
-        const user = await db.get('SELECT role FROM users WHERE email = ?', [email]);
+        // Use case-insensitive email match, filtering by auth_type for local users
+        let user;
+        if (authType === 'local') {
+          user = await db.get("SELECT id, role FROM users WHERE LOWER(email) = LOWER(?) AND auth_type = 'local'", [email]);
+        } else {
+          user = await db.get('SELECT id, role FROM users WHERE LOWER(email) = LOWER(?)', [email]);
+        }
         if (user) {
           userRole = user.role;
+          userId = user.id;
         }
       }
 
       // Get all active menu items
-      const items = await db.all(`
+      let items = await db.all(`
         SELECT * FROM menu_items
         WHERE is_active = 1
         ORDER BY sort_order
       `);
 
       // Get all active modules with their menu_id
-      const modules = await db.all(`
+      let modules = await db.all(`
         SELECT id, name, display_name, menu_id, icon, menu_weight
         FROM modules
         WHERE is_active = 1 AND menu_id IS NOT NULL
       `);
+
+      // Filter by group access (unless user is admin)
+      console.log('Menu filter - userRole:', userRole, 'userId:', userId, 'email:', email, 'authType:', authType);
+      if (userRole !== 'admin' && userId) {
+        // Get accessible modules
+        const accessibleModules = await db.all(`
+          SELECT DISTINCT gma.module_id
+          FROM group_module_access gma
+          INNER JOIN user_group_members ugm ON ugm.group_id = gma.group_id
+          WHERE ugm.user_id = ?
+        `, [userId]);
+        const accessibleModuleIds = new Set(accessibleModules.map(m => m.module_id));
+        console.log('Accessible module IDs for user', userId, ':', [...accessibleModuleIds]);
+        console.log('Modules before filter:', modules.map(m => m.name));
+        modules = modules.filter(m => accessibleModuleIds.has(m.id));
+        console.log('Modules after filter:', modules.map(m => m.name));
+
+        // Get accessible menu items
+        const accessibleMenuItems = await db.all(`
+          SELECT DISTINCT gma.menu_item_id
+          FROM group_menu_access gma
+          INNER JOIN user_group_members ugm ON ugm.group_id = gma.group_id
+          WHERE ugm.user_id = ?
+        `, [userId]);
+        const accessibleMenuIds = new Set(accessibleMenuItems.map(m => m.menu_item_id));
+
+        // Get menu items that have NO group restrictions (available to all)
+        const restrictedMenuIds = await db.all(`SELECT DISTINCT menu_item_id FROM group_menu_access`);
+        const restrictedMenuIdSet = new Set(restrictedMenuIds.map(m => m.menu_item_id));
+
+        // Filter: keep items that are either unrestricted OR accessible through groups
+        items = items.filter(item => !restrictedMenuIdSet.has(item.id) || accessibleMenuIds.has(item.id));
+      }
 
       // Add modules as virtual menu items under their parent menu
       // Use negative IDs to avoid conflicts with real menu items

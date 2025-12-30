@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useUser } from '../../context/UserContext';
-import { userService, type User, type UserRole, type UserPermission, type PermissionLevel } from '../../services/api';
+import { userService, groupService, type User, type UserRole, type UserPermission, type PermissionLevel, type UserGroup } from '../../services/api';
 import {
   PencilIcon,
   TrashIcon,
@@ -10,6 +10,10 @@ import {
   EyeIcon,
   PencilSquareIcon,
   TrashIcon as TrashIconOutline,
+  UserGroupIcon,
+  UserPlusIcon,
+  LockClosedIcon,
+  ComputerDesktopIcon,
 } from '@heroicons/react/24/outline';
 
 const modules = [
@@ -26,7 +30,7 @@ const permissionLevels: { value: PermissionLevel; label: string; description: st
 interface EditModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (data: { role: UserRole; is_active: number; name: string }) => void;
+  onSubmit: (data: { role: UserRole; is_active: number; name: string }, groupIds: number[]) => void;
   user: User | null;
 }
 
@@ -36,27 +40,56 @@ function EditUserModal({ isOpen, onClose, onSubmit, user }: EditModalProps) {
     role: 'user' as UserRole,
     is_active: 1,
   });
+  const [allGroups, setAllGroups] = useState<UserGroup[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
 
   useEffect(() => {
-    if (user) {
+    if (user && isOpen) {
       setFormData({
         name: user.name,
         role: user.role,
         is_active: user.is_active,
       });
+      loadGroups();
     }
-  }, [user]);
+  }, [user, isOpen]);
+
+  const loadGroups = async () => {
+    if (!user) return;
+    setLoadingGroups(true);
+    try {
+      const [groups, userGroups] = await Promise.all([
+        groupService.getAll(),
+        groupService.getUserGroups(user.id),
+      ]);
+      setAllGroups(groups.filter(g => g.is_active));
+      setSelectedGroupIds(userGroups.map(g => g.id));
+    } catch (error) {
+      console.error('Failed to load groups:', error);
+    } finally {
+      setLoadingGroups(false);
+    }
+  };
+
+  const toggleGroup = (groupId: number) => {
+    setSelectedGroupIds(prev =>
+      prev.includes(groupId)
+        ? prev.filter(id => id !== groupId)
+        : [...prev, groupId]
+    );
+  };
 
   if (!isOpen || !user) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(formData);
+    onSubmit(formData, selectedGroupIds);
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between p-6 border-b border-gray-100">
           <h2 className="text-lg font-semibold text-gray-900">Edit User</h2>
           <button
@@ -66,7 +99,7 @@ function EditUserModal({ isOpen, onClose, onSubmit, user }: EditModalProps) {
             <XMarkIcon className="h-5 w-5 text-gray-500" />
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
             <input
@@ -98,7 +131,7 @@ function EditUserModal({ isOpen, onClose, onSubmit, user }: EditModalProps) {
               <option value="admin">Admin</option>
             </select>
             {formData.role === 'admin' && (
-              <p className="text-xs text-amber-600 mt-1">Admin users have full access to all modules</p>
+              <p className="text-xs text-amber-600 mt-1">Admin users have full access to all modules regardless of groups</p>
             )}
           </div>
           <div>
@@ -112,6 +145,50 @@ function EditUserModal({ isOpen, onClose, onSubmit, user }: EditModalProps) {
               <span className="text-sm font-medium text-gray-700">Active</span>
             </label>
           </div>
+
+          {/* Groups Section */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              <span className="flex items-center gap-2">
+                <UserGroupIcon className="h-4 w-4" />
+                Groups
+              </span>
+            </label>
+            {loadingGroups ? (
+              <div className="flex items-center justify-center py-4">
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+              </div>
+            ) : allGroups.length === 0 ? (
+              <p className="text-sm text-gray-500 py-2">No groups available. Create groups in the Groups admin page.</p>
+            ) : (
+              <div className="border border-gray-200 rounded-lg p-3 space-y-2 max-h-40 overflow-y-auto">
+                {allGroups.map((group) => (
+                  <label
+                    key={group.id}
+                    className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedGroupIds.includes(group.id)}
+                      onChange={() => toggleGroup(group.id)}
+                      className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <div className="flex items-center gap-2">
+                      {group.color && (
+                        <span
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: group.color }}
+                        />
+                      )}
+                      <span className="text-sm font-medium text-gray-700">{group.display_name}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-gray-500 mt-1">Groups determine which modules this user can access.</p>
+          </div>
+
           <div className="flex gap-3 pt-4">
             <button
               type="button"
@@ -125,6 +202,213 @@ function EditUserModal({ isOpen, onClose, onSubmit, user }: EditModalProps) {
               className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               Save Changes
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Create Local User Modal
+interface CreateLocalUserModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (data: { email: string; name: string; role: UserRole; password: string }) => void;
+}
+
+function CreateLocalUserModal({ isOpen, onClose, onSubmit }: CreateLocalUserModalProps) {
+  const [formData, setFormData] = useState({
+    email: '',
+    name: '',
+    role: 'user' as UserRole,
+    password: '',
+  });
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setFormData({ email: '', name: '', role: 'user', password: '' });
+      setError('');
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (formData.password.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+
+    onSubmit(formData);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between p-6 border-b border-gray-100">
+          <h2 className="text-lg font-semibold text-gray-900">Create Local User</h2>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+            <XMarkIcon className="h-5 w-5 text-gray-500" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3">
+              {error}
+            </div>
+          )}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <input
+              type="email"
+              required
+              value={formData.email}
+              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="user@example.com"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <input
+              type="text"
+              required
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Full Name"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+            <select
+              value={formData.role}
+              onChange={(e) => setFormData({ ...formData, role: e.target.value as UserRole })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="user">User</option>
+              <option value="manager">Manager</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Initial Password</label>
+            <input
+              type="password"
+              required
+              value={formData.password}
+              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Min. 6 characters"
+              minLength={6}
+            />
+            <p className="text-xs text-gray-500 mt-1">User will be required to change password on first login</p>
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Create User
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Reset Password Modal
+interface ResetPasswordModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (password: string) => void;
+  user: User | null;
+}
+
+function ResetPasswordModal({ isOpen, onClose, onSubmit, user }: ResetPasswordModalProps) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setPassword('');
+      setError('');
+    }
+  }, [isOpen]);
+
+  if (!isOpen || !user) return null;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+
+    onSubmit(password);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between p-6 border-b border-gray-100">
+          <h2 className="text-lg font-semibold text-gray-900">Reset Password</h2>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
+            <XMarkIcon className="h-5 w-5 text-gray-500" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3">
+              {error}
+            </div>
+          )}
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <p className="text-sm text-amber-800">
+              Reset password for <strong>{user.name}</strong> ({user.email})
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Min. 6 characters"
+              minLength={6}
+            />
+            <p className="text-xs text-gray-500 mt-1">User will be required to change password on next login</p>
+          </div>
+          <div className="flex gap-3 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+            >
+              Reset Password
             </button>
           </div>
         </form>
@@ -282,6 +566,8 @@ export default function UsersPage() {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [permissionsUser, setPermissionsUser] = useState<User | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [resetPasswordUser, setResetPasswordUser] = useState<User | null>(null);
 
   useEffect(() => {
     loadUsers();
@@ -298,10 +584,34 @@ export default function UsersPage() {
     }
   };
 
-  const handleUpdate = async (data: { role: UserRole; is_active: number; name: string }) => {
+  const handleUpdate = async (data: { role: UserRole; is_active: number; name: string }, groupIds: number[]) => {
     if (!editingUser) return;
     try {
+      // Update user details
       await userService.update(editingUser.id, data);
+
+      // Update user's group memberships
+      // We need to update each group's membership - add user to selected groups, remove from unselected
+      const currentUserGroups = await groupService.getUserGroups(editingUser.id);
+      const currentGroupIds = currentUserGroups.map(g => g.id);
+
+      // Find groups to add and remove
+      const groupsToAdd = groupIds.filter(id => !currentGroupIds.includes(id));
+      const groupsToRemove = currentGroupIds.filter(id => !groupIds.includes(id));
+
+      // Update group memberships
+      for (const groupId of groupsToAdd) {
+        const group = await groupService.getById(groupId);
+        const currentMemberIds = group.members?.map(m => m.id) || [];
+        await groupService.updateMembers(groupId, [...currentMemberIds, editingUser.id]);
+      }
+
+      for (const groupId of groupsToRemove) {
+        const group = await groupService.getById(groupId);
+        const currentMemberIds = group.members?.map(m => m.id) || [];
+        await groupService.updateMembers(groupId, currentMemberIds.filter(id => id !== editingUser.id));
+      }
+
       await loadUsers();
       setEditingUser(null);
     } catch (error) {
@@ -316,6 +626,28 @@ export default function UsersPage() {
       setDeleteConfirm(null);
     } catch (error) {
       console.error('Failed to delete user:', error);
+    }
+  };
+
+  const handleCreateLocalUser = async (data: { email: string; name: string; role: UserRole; password: string }) => {
+    try {
+      await userService.create(data);
+      await loadUsers();
+      setShowCreateModal(false);
+    } catch (error) {
+      console.error('Failed to create user:', error);
+      throw error; // Re-throw to show error in modal
+    }
+  };
+
+  const handleResetPassword = async (password: string) => {
+    if (!resetPasswordUser) return;
+    try {
+      await userService.resetPassword(resetPasswordUser.id, password);
+      setResetPasswordUser(null);
+    } catch (error) {
+      console.error('Failed to reset password:', error);
+      throw error;
     }
   };
 
@@ -345,9 +677,18 @@ export default function UsersPage() {
   return (
     <div className="p-8">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-        <p className="text-gray-500 mt-1">Manage user roles and module permissions.</p>
+      <div className="flex items-start justify-between mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
+          <p className="text-gray-500 mt-1">Manage user roles and module permissions.</p>
+        </div>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          <UserPlusIcon className="h-5 w-5" />
+          Create Local User
+        </button>
       </div>
 
       {/* Table */}
@@ -366,6 +707,7 @@ export default function UsersPage() {
               <tr className="text-left text-sm text-gray-500">
                 <th className="px-6 py-4 font-medium">Name</th>
                 <th className="px-6 py-4 font-medium">Email</th>
+                <th className="px-6 py-4 font-medium">Auth</th>
                 <th className="px-6 py-4 font-medium">Role</th>
                 <th className="px-6 py-4 font-medium">Status</th>
                 <th className="px-6 py-4 font-medium">Joined</th>
@@ -377,6 +719,27 @@ export default function UsersPage() {
                 <tr key={user.id} className="border-t border-gray-100 hover:bg-gray-50">
                   <td className="px-6 py-4 font-medium text-gray-900">{user.name}</td>
                   <td className="px-6 py-4 text-gray-600">{user.email}</td>
+                  <td className="px-6 py-4">
+                    <span
+                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        user.auth_type === 'local'
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'bg-blue-100 text-blue-800'
+                      }`}
+                    >
+                      {user.auth_type === 'local' ? (
+                        <ComputerDesktopIcon className="h-3 w-3" />
+                      ) : (
+                        <svg className="w-3 h-3" viewBox="0 0 21 21" fill="none">
+                          <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+                          <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+                          <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+                          <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+                        </svg>
+                      )}
+                      {user.auth_type === 'local' ? 'Local' : 'M365'}
+                    </span>
+                  </td>
                   <td className="px-6 py-4">
                     <span
                       className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getRoleBadgeColor(
@@ -407,6 +770,15 @@ export default function UsersPage() {
                       >
                         <KeyIcon className="h-4 w-4 text-blue-500" />
                       </button>
+                      {user.auth_type === 'local' && (
+                        <button
+                          onClick={() => setResetPasswordUser(user)}
+                          className="p-2 hover:bg-amber-50 rounded-lg transition-colors"
+                          title="Reset Password"
+                        >
+                          <LockClosedIcon className="h-4 w-4 text-amber-500" />
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditingUser(user)}
                         className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
@@ -464,6 +836,21 @@ export default function UsersPage() {
         isOpen={!!permissionsUser}
         onClose={() => setPermissionsUser(null)}
         user={permissionsUser}
+      />
+
+      {/* Create Local User Modal */}
+      <CreateLocalUserModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onSubmit={handleCreateLocalUser}
+      />
+
+      {/* Reset Password Modal */}
+      <ResetPasswordModal
+        isOpen={!!resetPasswordUser}
+        onClose={() => setResetPasswordUser(null)}
+        onSubmit={handleResetPassword}
+        user={resetPasswordUser}
       />
     </div>
   );

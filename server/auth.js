@@ -1,6 +1,9 @@
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 
+// Local JWT configuration
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
+
 // Microsoft Entra (Azure AD) configuration
 const TENANT_ID = process.env.AZURE_TENANT_ID || '7388d115-29cd-4cde-b8f1-78559e9476ec';
 const CLIENT_ID = process.env.AZURE_CLIENT_ID || '780ae31c-468a-45ba-8a5a-976ecbe1063d';
@@ -74,8 +77,29 @@ function decodeToken(token) {
   }
 }
 
-// Verify with retry on invalid signature
-async function verifyToken(token) {
+// Verify local JWT token
+function verifyLocalToken(token) {
+  return new Promise((resolve, reject) => {
+    jwt.verify(
+      token,
+      JWT_SECRET,
+      {
+        issuer: 'baristacms-local',
+        audience: 'baristacms-local',
+      },
+      (err, decoded) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({ ...decoded, isLocalToken: true });
+        }
+      }
+    );
+  });
+}
+
+// Verify with retry on invalid signature (Microsoft Entra tokens)
+async function verifyMsalToken(token) {
   const decoded = decodeToken(token);
 
   if (!decoded) {
@@ -118,6 +142,20 @@ async function verifyToken(token) {
   }
 }
 
+// Verify token (tries local first, then Microsoft Entra)
+async function verifyToken(token) {
+  // First, try to decode to check if it's a local token
+  const decoded = decodeToken(token);
+
+  if (decoded?.payload?.iss === 'baristacms-local') {
+    // This is a local token
+    return await verifyLocalToken(token);
+  }
+
+  // Try Microsoft Entra verification
+  return await verifyMsalToken(token);
+}
+
 // Authentication middleware
 export async function authenticate(req, res, next) {
   // Skip auth for health check
@@ -142,15 +180,26 @@ export async function authenticate(req, res, next) {
     const decoded = await verifyToken(token);
 
     // Attach user info to request
-    const email = decoded.preferred_username || decoded.email || decoded.upn;
-    console.log('Auth - decoded email:', email, 'preferred_username:', decoded.preferred_username, 'email:', decoded.email, 'upn:', decoded.upn);
-
-    req.user = {
-      email: email,
-      name: decoded.name,
-      oid: decoded.oid, // Object ID
-      tid: decoded.tid, // Tenant ID
-    };
+    if (decoded.isLocalToken) {
+      // Local token - user info is directly in the token
+      console.log('Auth - local token for:', decoded.email);
+      req.user = {
+        email: decoded.email,
+        name: decoded.name,
+        authType: 'local',
+      };
+    } else {
+      // Microsoft Entra token
+      const email = decoded.preferred_username || decoded.email || decoded.upn;
+      console.log('Auth - M365 token for:', email);
+      req.user = {
+        email: email,
+        name: decoded.name,
+        oid: decoded.oid, // Object ID
+        tid: decoded.tid, // Tenant ID
+        authType: 'm365',
+      };
+    }
 
     next();
   } catch (err) {

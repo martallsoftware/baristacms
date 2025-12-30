@@ -71,12 +71,13 @@ async function getGraphClient() {
     return null;
   }
 
-  const tenantId = process.env.AZURE_TENANT_ID;
-  const clientId = process.env.AZURE_CLIENT_ID;
-  const clientSecret = process.env.AZURE_CLIENT_SECRET;
+  // Use EMAIL_AZURE_* for email-specific config, fallback to AZURE_* for backwards compatibility
+  const tenantId = process.env.EMAIL_AZURE_TENANT_ID || process.env.AZURE_TENANT_ID;
+  const clientId = process.env.EMAIL_AZURE_CLIENT_ID || process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.EMAIL_AZURE_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET;
 
   if (!tenantId || !clientId || !clientSecret) {
-    console.warn('Microsoft Graph not configured: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET required');
+    console.warn('Microsoft Graph not configured: EMAIL_AZURE_TENANT_ID, EMAIL_AZURE_CLIENT_ID, EMAIL_AZURE_CLIENT_SECRET required');
     return null;
   }
 
@@ -106,7 +107,7 @@ async function sendEmailViaGraph({ to, subject, text, html, cc, bcc, replyTo }) 
   if (!client) {
     return {
       success: false,
-      error: 'Microsoft Graph not configured. Please set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET.',
+      error: 'Microsoft Graph not configured. Please set EMAIL_AZURE_TENANT_ID, EMAIL_AZURE_CLIENT_ID, EMAIL_AZURE_CLIENT_SECRET.',
     };
   }
 
@@ -330,7 +331,7 @@ function getProvider() {
   if (provider === 'smtp') return 'smtp';
 
   // Auto-detect based on available config
-  if (process.env.AZURE_CLIENT_SECRET && process.env.EMAIL_FROM) return 'graph';
+  if ((process.env.EMAIL_AZURE_CLIENT_SECRET || process.env.AZURE_CLIENT_SECRET) && process.env.EMAIL_FROM) return 'graph';
   if (process.env.SMTP_USER && process.env.SMTP_PASSWORD) return 'smtp';
 
   return null;

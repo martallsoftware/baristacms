@@ -4,43 +4,61 @@
  */
 
 import { Router } from 'express';
+import { hashPassword } from './localAuth.js';
 
 export function createUserRoutes(db) {
   const router = Router();
 
-  // Get current user (creates if not exists)
+  // Get current user (creates if not exists for M365 users)
   router.get('/me', async (req, res) => {
     try {
       const email = req.user?.email;
-      console.log('GET /users/me - email from token:', email);
+      const authType = req.user?.authType || 'm365';
+      console.log('GET /users/me - email from token:', email, 'authType:', authType);
 
       if (!email) {
         return res.status(401).json({ message: 'User email not found in token' });
       }
 
-      // Try exact match first
-      let user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
+      let user = null;
 
-      // If not found, try case-insensitive match
-      if (!user) {
-        user = await db.get('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [email]);
-        if (user) {
-          console.log('Found user with case-insensitive match:', user.email);
+      // For local users, always filter by auth_type to avoid matching M365 users with same email
+      if (authType === 'local') {
+        // Try exact match first, then case-insensitive
+        user = await db.get("SELECT * FROM users WHERE email = ? AND auth_type = 'local'", [email]);
+        if (!user) {
+          user = await db.get("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND auth_type = 'local'", [email]);
+        }
+        if (!user) {
+          return res.status(401).json({ message: 'Local user not found' });
+        }
+      } else {
+        // M365 users - try exact match first
+        user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
+
+        // If not found, try case-insensitive match
+        if (!user) {
+          user = await db.get('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [email]);
+          if (user) {
+            console.log('Found user with case-insensitive match:', user.email);
+          }
+        }
+
+        // Auto-create for M365 users
+        if (!user) {
+          console.log('Creating new M365 user for email:', email);
+          const result = await db.run(
+            `INSERT INTO users (email, name, role, is_active, auth_type) VALUES (?, ?, 'user', 1, 'm365')`,
+            [email, req.user?.name || email]
+          );
+          user = await db.get('SELECT * FROM users WHERE id = ?', [result.lastInsertRowid]);
         }
       }
 
-      if (!user) {
-        // Create user with default role
-        console.log('Creating new user for email:', email);
-        const result = await db.run(
-          `INSERT INTO users (email, name, role, is_active) VALUES (?, ?, 'user', 1)`,
-          [email, req.user?.name || email]
-        );
-        user = await db.get('SELECT * FROM users WHERE id = ?', [result.lastInsertRowid]);
-      }
-
-      console.log('Returning user:', user.email, 'role:', user.role);
-      res.json(user);
+      console.log('Returning user:', user.email, 'role:', user.role, 'auth_type:', user.auth_type);
+      // Don't return password_hash to frontend
+      const { password_hash, ...safeUser } = user;
+      res.json(safeUser);
     } catch (error) {
       console.error('Error in /users/me:', error);
       res.status(500).json({ message: error.message });
@@ -50,9 +68,49 @@ export function createUserRoutes(db) {
   // Get all users
   router.get('/', async (req, res) => {
     try {
-      const users = await db.all('SELECT * FROM users ORDER BY name');
+      const users = await db.all('SELECT id, email, name, role, is_active, auth_type, must_change_password, created_at, updated_at FROM users ORDER BY name');
       res.json(users);
     } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Create local user
+  router.post('/', async (req, res) => {
+    try {
+      const { email, name, role, password } = req.body;
+
+      if (!email || !name) {
+        return res.status(400).json({ message: 'Email and name are required' });
+      }
+
+      // Check if user already exists
+      const existing = await db.get('SELECT id FROM users WHERE LOWER(email) = LOWER(?)', [email]);
+      if (existing) {
+        return res.status(400).json({ message: 'User with this email already exists' });
+      }
+
+      // Hash password if provided
+      let passwordHash = null;
+      let mustChangePassword = 0;
+      if (password) {
+        passwordHash = await hashPassword(password);
+        mustChangePassword = 1; // Force password change on first login
+      }
+
+      const result = await db.run(
+        `INSERT INTO users (email, name, role, is_active, auth_type, password_hash, must_change_password)
+         VALUES (?, ?, ?, 1, 'local', ?, ?)`,
+        [email, name, role || 'user', passwordHash, mustChangePassword]
+      );
+
+      const user = await db.get(
+        'SELECT id, email, name, role, is_active, auth_type, must_change_password, created_at FROM users WHERE id = ?',
+        [result.lastInsertRowid]
+      );
+      res.status(201).json(user);
+    } catch (error) {
+      console.error('Error creating user:', error);
       res.status(500).json({ message: error.message });
     }
   });
@@ -68,9 +126,42 @@ export function createUserRoutes(db) {
         [name, role, is_active ? 1 : 0, id]
       );
 
-      const user = await db.get('SELECT * FROM users WHERE id = ?', [id]);
+      const user = await db.get('SELECT id, email, name, role, is_active, auth_type, must_change_password, created_at, updated_at FROM users WHERE id = ?', [id]);
       res.json(user);
     } catch (error) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Reset password for local user (admin function)
+  router.put('/:id/reset-password', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { password } = req.body;
+
+      if (!password || password.length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      }
+
+      // Check user exists and is local
+      const user = await db.get('SELECT id, auth_type FROM users WHERE id = ?', [id]);
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+      if (user.auth_type !== 'local') {
+        return res.status(400).json({ message: 'Cannot reset password for M365 users' });
+      }
+
+      // Hash and update password
+      const passwordHash = await hashPassword(password);
+      await db.run(
+        'UPDATE users SET password_hash = ?, must_change_password = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [passwordHash, id]
+      );
+
+      res.json({ success: true, message: 'Password reset successfully' });
+    } catch (error) {
+      console.error('Error resetting password:', error);
       res.status(500).json({ message: error.message });
     }
   });

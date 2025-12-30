@@ -10,6 +10,58 @@ import { existsSync, unlinkSync, writeFileSync } from 'fs';
 export function createRecordRoutes(db, uploadsDir) {
   const router = Router({ mergeParams: true });
 
+  // Middleware to check module access based on user groups
+  async function checkModuleAccess(req, res, next) {
+    try {
+      const userEmail = req.user?.email;
+      const authType = req.user?.authType || 'm365';
+      if (!userEmail) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+
+      // Use case-insensitive email match, filtering by auth_type for local users
+      let user;
+      if (authType === 'local') {
+        user = await db.get("SELECT id, role FROM users WHERE LOWER(email) = LOWER(?) AND auth_type = 'local'", [userEmail]);
+      } else {
+        user = await db.get('SELECT id, role FROM users WHERE LOWER(email) = LOWER(?)', [userEmail]);
+      }
+      if (!user) {
+        return res.status(401).json({ message: 'User not found' });
+      }
+
+      // Admin users bypass group access check
+      if (user.role === 'admin') {
+        return next();
+      }
+
+      const module = await db.get('SELECT id FROM modules WHERE name = ?', [req.params.moduleName]);
+      if (!module) {
+        return res.status(404).json({ message: 'Module not found' });
+      }
+
+      // Check if user has access to this module through any group
+      const hasAccess = await db.get(`
+        SELECT 1 FROM group_module_access gma
+        INNER JOIN user_group_members ugm ON ugm.group_id = gma.group_id
+        WHERE ugm.user_id = ? AND gma.module_id = ?
+        LIMIT 1
+      `, [user.id, module.id]);
+
+      if (!hasAccess) {
+        return res.status(403).json({ message: 'Access denied to this module' });
+      }
+
+      next();
+    } catch (error) {
+      console.error('Error checking module access:', error);
+      res.status(500).json({ message: 'Error checking access permissions' });
+    }
+  }
+
+  // Apply access check to all routes
+  router.use(checkModuleAccess);
+
   // Helper to get record with images
   async function getRecordWithImages(moduleId, recordId) {
     const record = await db.get('SELECT * FROM module_records WHERE id = ? AND module_id = ?', [recordId, moduleId]);

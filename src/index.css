@@ -1,16 +1,25 @@
 @import "tailwindcss";
 
 :root {
-  /* Theme color variables */
-  --theme-sidebar-bg: #1e293b;
-  --theme-sidebar-border: #334155;
-  --theme-sidebar-hover: #334155;
-  --theme-accent: #2563eb;
-  --theme-accent-hover: #1d4ed8;
-  --theme-accent-light: #60a5fa;
+  /* Theme color variables - default to barista brown */
+  --theme-sidebar-bg: #3d2817;
+  --theme-sidebar-border: #5c3d24;
+  --theme-sidebar-hover: #5c3d24;
+  --theme-accent: #b97738;
+  --theme-accent-hover: #9a6230;
+  --theme-accent-light: #d69a54;
 }
 
 /* Theme presets */
+[data-theme="barista"] {
+  --theme-sidebar-bg: #3d2817;
+  --theme-sidebar-border: #5c3d24;
+  --theme-sidebar-hover: #5c3d24;
+  --theme-accent: #b97738;
+  --theme-accent-hover: #9a6230;
+  --theme-accent-light: #d69a54;
+}
+
 [data-theme="blue"] {
   --theme-sidebar-bg: #1e293b;
   --theme-sidebar-border: #334155;

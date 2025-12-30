@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
 import { useMsal } from '@azure/msal-react';
-import { userService, setTokenGetter, type User, type UserRole, type PermissionLevel } from '../services/api';
+import { userService, setTokenGetter, localAuthService, type User, type UserRole, type PermissionLevel } from '../services/api';
 import { loginRequest, apiRequest, graphConfig } from '../config/authConfig';
 
 interface UserContextType {
@@ -10,12 +10,14 @@ interface UserContextType {
   isAdmin: boolean;
   isManager: boolean;
   photoUrl: string | null;
+  authType: 'm365' | 'local' | null;
   hasRole: (roles: UserRole[]) => boolean;
   refreshUser: () => Promise<void>;
   checkPermission: (module: string) => Promise<PermissionLevel>;
   canView: (module: string) => Promise<boolean>;
   canEdit: (module: string) => Promise<boolean>;
   canDelete: (module: string) => Promise<boolean>;
+  logout: () => void;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
@@ -30,12 +32,26 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [authType, setAuthType] = useState<'m365' | 'local' | null>(null);
 
   const account = accounts[0];
+  const localToken = localAuthService.getToken();
 
-  // Set up token getter for API calls (uses apiRequest scope, not Graph scope)
+  // Determine auth type
   useEffect(() => {
     if (account) {
+      setAuthType('m365');
+    } else if (localToken) {
+      setAuthType('local');
+    } else {
+      setAuthType(null);
+    }
+  }, [account, localToken]);
+
+  // Set up token getter for API calls
+  useEffect(() => {
+    if (account) {
+      // M365 auth - use MSAL to get tokens
       setTokenGetter(async () => {
         const response = await instance.acquireTokenSilent({
           ...apiRequest,
@@ -43,11 +59,18 @@ export function UserProvider({ children }: { children: ReactNode }) {
         });
         return response.accessToken;
       });
+    } else if (localToken) {
+      // Local auth - use stored token
+      setTokenGetter(async () => {
+        return localAuthService.getToken() || '';
+      });
     }
-  }, [instance, account]);
+  }, [instance, account, localToken]);
 
   const loadUser = async () => {
-    if (!account?.username) {
+    // Need either M365 account or local token
+    const currentLocalToken = localAuthService.getToken();
+    if (!account?.username && !currentLocalToken) {
       setLoading(false);
       return;
     }
@@ -55,8 +78,28 @@ export function UserProvider({ children }: { children: ReactNode }) {
     try {
       setLoading(true);
       setError(null);
-      const userData = await userService.getCurrentUser(account.username, account.name);
-      setUser(userData);
+
+      if (account?.username) {
+        // M365 user
+        const userData = await userService.getCurrentUser(account.username, account.name);
+        setUser(userData);
+      } else if (currentLocalToken) {
+        // Local user - verify token and get user data
+        // Set up token getter immediately before making API calls
+        setTokenGetter(async () => currentLocalToken);
+
+        const verifyResult = await localAuthService.verifyToken(currentLocalToken);
+        if (verifyResult.valid && verifyResult.user) {
+          // Get full user data from API
+          const userData = await userService.getCurrentUser(verifyResult.user.email, verifyResult.user.name);
+          setUser(userData);
+        } else {
+          // Invalid token
+          localAuthService.removeToken();
+          setError('Session expired. Please log in again.');
+        }
+      }
+
       // Clear permission cache when user changes
       permissionCache.clear();
     } catch (err) {
@@ -68,6 +111,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   };
 
   const loadUserPhoto = async () => {
+    // Only load photo for M365 users
     if (!account) {
       return;
     }
@@ -106,7 +150,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     loadUser();
-    loadUserPhoto();
+
+    // Only load photo for M365 users
+    if (account) {
+      loadUserPhoto();
+    }
 
     return () => {
       // Cleanup blob URL on unmount
@@ -114,7 +162,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
         URL.revokeObjectURL(photoUrl);
       }
     };
-  }, [account?.username]);
+  }, [account?.username, localToken]);
+
+  const logout = useCallback(() => {
+    if (authType === 'local') {
+      localAuthService.removeToken();
+      setUser(null);
+      setAuthType(null);
+      // Redirect to root to show login page (cleaner than reload)
+      window.location.href = '/';
+    } else if (authType === 'm365') {
+      instance.logoutRedirect();
+    }
+  }, [authType, instance]);
 
   const isAdmin = user?.role === 'admin';
   const isManager = user?.role === 'manager' || user?.role === 'admin';
@@ -171,12 +231,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
         isAdmin,
         isManager,
         photoUrl,
+        authType,
         hasRole,
         refreshUser: loadUser,
         checkPermission,
         canView,
         canEdit,
         canDelete,
+        logout,
       }}
     >
       {children}

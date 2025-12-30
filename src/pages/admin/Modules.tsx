@@ -9,6 +9,9 @@ import {
   EnvelopeIcon,
   PrinterIcon,
   ArrowUturnRightIcon,
+  ChevronDownIcon,
+  EyeIcon,
+  EyeSlashIcon,
   HomeIcon,
   UsersIcon,
   Cog6ToothIcon,
@@ -151,11 +154,13 @@ const iconOptions = [
 import {
   moduleService,
   menuService,
+  groupService,
   type Module,
   type MenuItem,
   type FieldType,
   type ModuleConfig,
   type DateWarningMode,
+  type UserGroup,
 } from '../../services/api';
 import { useToast } from '../../context/ToastContext';
 
@@ -177,6 +182,7 @@ interface FieldFormData {
   displayName: string;
   fieldType: FieldType;
   isRequired: boolean;
+  showInList: boolean;  // Whether to show this field in the records list/grid
   options: string;
   defaultValue: string;
   relationModule: string;  // For relation fields: which module to link to
@@ -191,6 +197,7 @@ const emptyField: FieldFormData = {
   displayName: '',
   fieldType: 'text',
   isRequired: false,
+  showInList: true,
   options: '',
   defaultValue: '',
   relationModule: '',
@@ -224,7 +231,10 @@ export default function ModulesPage() {
   const [menuId, setMenuId] = useState<number | null>(null);
   const [parentModuleId, setParentModuleId] = useState<number | null>(null);
   const [fields, setFields] = useState<FieldFormData[]>([]);
+  const [expandedFields, setExpandedFields] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [allGroups, setAllGroups] = useState<UserGroup[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
 
   useEffect(() => {
     loadData();
@@ -232,12 +242,14 @@ export default function ModulesPage() {
 
   const loadData = async () => {
     try {
-      const [modulesData, menuData] = await Promise.all([
+      const [modulesData, menuData, groupsData] = await Promise.all([
         moduleService.getAll(),
         menuService.getAll(),
+        groupService.getAll(),
       ]);
       setModules(modulesData);
       setMenuItems(menuData);
+      setAllGroups(groupsData.filter(g => g.is_active));
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -262,6 +274,8 @@ export default function ModulesPage() {
     setMenuId(null);
     setParentModuleId(null);
     setFields([{ ...emptyField }]);
+    setExpandedFields(new Set([0]));  // Expand the first field
+    setSelectedGroupIds([]);  // No groups selected for new module
     setShowModal(true);
   };
 
@@ -289,6 +303,7 @@ export default function ModulesPage() {
           displayName: f.display_name,
           fieldType: f.field_type,
           isRequired: f.is_required === 1,
+          showInList: f.show_in_list !== 0,
           options: f.options?.join(', ') || '',
           defaultValue: f.default_value || '',
           relationModule: f.relation_module || '',
@@ -298,6 +313,26 @@ export default function ModulesPage() {
           weight: f.weight?.toString() || '50',
         })) || []
       );
+      setExpandedFields(new Set());  // Start with all collapsed
+
+      // Load groups that have access to this module
+      const groupsWithAccess = allGroups.filter(group =>
+        group.modules?.some(m => m.id === fullModule.id)
+      );
+      // If we don't have module info in groups, fetch each group's details
+      if (groupsWithAccess.length === 0 && allGroups.length > 0) {
+        const groupAccessIds: number[] = [];
+        for (const group of allGroups) {
+          const fullGroup = await groupService.getById(group.id);
+          if (fullGroup.modules?.some(m => m.id === fullModule.id)) {
+            groupAccessIds.push(group.id);
+          }
+        }
+        setSelectedGroupIds(groupAccessIds);
+      } else {
+        setSelectedGroupIds(groupsWithAccess.map(g => g.id));
+      }
+
       setShowModal(true);
     } catch (error) {
       console.error('Failed to load module:', error);
@@ -305,7 +340,22 @@ export default function ModulesPage() {
   };
 
   const addField = () => {
+    const newIndex = fields.length;
     setFields([...fields, { ...emptyField }]);
+    // Auto-expand the new field
+    setExpandedFields(prev => new Set([...prev, newIndex]));
+  };
+
+  const toggleFieldExpansion = (index: number) => {
+    setExpandedFields(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
   };
 
   const removeField = (index: number) => {
@@ -314,6 +364,14 @@ export default function ModulesPage() {
 
   const updateField = (index: number, updates: Partial<FieldFormData>) => {
     setFields(fields.map((f, i) => (i === index ? { ...f, ...updates } : f)));
+  };
+
+  const toggleGroupAccess = (groupId: number) => {
+    setSelectedGroupIds(prev =>
+      prev.includes(groupId)
+        ? prev.filter(id => id !== groupId)
+        : [...prev, groupId]
+    );
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -338,6 +396,7 @@ export default function ModulesPage() {
           displayName: f.displayName,
           fieldType: f.fieldType,
           isRequired: f.isRequired,
+          showInList: f.showInList,
           options: f.options ? f.options.split(',').map((o) => o.trim()).filter(Boolean) : undefined,
           defaultValue: f.defaultValue || undefined,
           relationModule: f.fieldType === 'relation' ? f.relationModule : undefined,
@@ -347,6 +406,8 @@ export default function ModulesPage() {
           sortOrder: index,
           weight: f.weight ? parseInt(f.weight) : 50,
         }));
+
+      let moduleId: number;
 
       if (selectedModule) {
         // Update existing module
@@ -360,9 +421,10 @@ export default function ModulesPage() {
           useInApp,
           fields: processedFields,
         });
+        moduleId = selectedModule.id;
       } else {
         // Create new module
-        await moduleService.create({
+        const newModule = await moduleService.create({
           name: name.toLowerCase().replace(/\s+/g, '_'),
           displayName,
           description: description || undefined,
@@ -372,6 +434,26 @@ export default function ModulesPage() {
           parentModuleId,
           fields: processedFields,
         });
+        moduleId = newModule.id;
+      }
+
+      // Update group access for this module
+      // For each group, update its module list based on whether it's selected
+      for (const group of allGroups) {
+        const fullGroup = await groupService.getById(group.id);
+        const currentModuleIds = fullGroup.modules?.map(m => m.id) || [];
+        const hasModule = currentModuleIds.includes(moduleId);
+        const shouldHaveModule = selectedGroupIds.includes(group.id);
+
+        if (hasModule !== shouldHaveModule) {
+          if (shouldHaveModule) {
+            // Add this module to the group
+            await groupService.updateModules(group.id, [...currentModuleIds, moduleId]);
+          } else {
+            // Remove this module from the group
+            await groupService.updateModules(group.id, currentModuleIds.filter(id => id !== moduleId));
+          }
+        }
       }
 
       await loadData();
@@ -731,6 +813,47 @@ export default function ModulesPage() {
                   </div>
                   <div></div>
                 </div>
+
+                {/* Group Access */}
+                <div className="mt-4 pt-4 border-t border-gray-200">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    <span className="flex items-center gap-2">
+                      <UserGroupIcon className="h-4 w-4" />
+                      Group Access
+                    </span>
+                  </label>
+                  {allGroups.length === 0 ? (
+                    <p className="text-sm text-gray-500 py-2">No groups available. Create groups in the Groups admin page.</p>
+                  ) : (
+                    <div className="border border-gray-200 rounded-lg p-3 space-y-2 max-h-40 overflow-y-auto">
+                      {allGroups.map((group) => (
+                        <label
+                          key={group.id}
+                          className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded-lg cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedGroupIds.includes(group.id)}
+                            onChange={() => toggleGroupAccess(group.id)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                          />
+                          <div className="flex items-center gap-2">
+                            {group.color && (
+                              <span
+                                className="w-3 h-3 rounded-full"
+                                style={{ backgroundColor: group.color }}
+                              />
+                            )}
+                            <span className="text-sm font-medium text-gray-700">{group.display_name}</span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 mt-1">
+                    Select which groups can access this module. Admin users always have access regardless of groups.
+                  </p>
+                </div>
                 <div className="mt-4 space-y-3">
                   <div>
                     <label className="flex items-center gap-2 cursor-pointer">
@@ -807,16 +930,17 @@ export default function ModulesPage() {
                 </div>
               </div>
 
-              {/* Fields */}
+              {/* Fields - Accordion Style */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-medium text-gray-900">Custom Fields</h3>
                   <button
                     type="button"
                     onClick={addField}
-                    className="text-sm text-blue-600 hover:text-blue-700"
+                    className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
                   >
-                    + Add Field
+                    <PlusIcon className="h-4 w-4" />
+                    Add Field
                   </button>
                 </div>
 
@@ -832,164 +956,245 @@ export default function ModulesPage() {
                     </button>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {fields.map((field, index) => (
-                      <div
-                        key={index}
-                        className="grid grid-cols-12 gap-2 p-3 bg-gray-50 rounded-lg items-start"
-                      >
-                        {/* Name: 2, Display: 2, Type: 2, Options: 3, Weight: 1, Req: 1, Del: 1 = 12 */}
-                        <div className="col-span-2">
-                          <label className="block text-xs text-gray-500 mb-1">Name</label>
-                          <input
-                            type="text"
-                            value={field.name}
-                            onChange={(e) => updateField(index, { name: e.target.value })}
-                            placeholder="field_name"
-                            className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          <label className="block text-xs text-gray-500 mb-1">Display Name</label>
-                          <input
-                            type="text"
-                            value={field.displayName}
-                            onChange={(e) => updateField(index, { displayName: e.target.value })}
-                            placeholder="Field Name"
-                            className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-                        <div className="col-span-2">
-                          <label className="block text-xs text-gray-500 mb-1">Type</label>
-                          <select
-                            value={field.fieldType}
-                            onChange={(e) => updateField(index, { fieldType: e.target.value as FieldType })}
-                            className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                  <div className="space-y-2">
+                    {fields.map((field, index) => {
+                      const isExpanded = expandedFields.has(index);
+                      const fieldTypeLabel = fieldTypes.find(t => t.value === field.fieldType)?.label || field.fieldType;
+
+                      return (
+                        <div
+                          key={index}
+                          className="border border-gray-200 rounded-lg overflow-hidden bg-white"
+                        >
+                          {/* Collapsed Header */}
+                          <div
+                            className="flex items-center justify-between px-4 py-3 bg-gray-50 cursor-pointer hover:bg-gray-100"
+                            onClick={() => toggleFieldExpansion(index)}
                           >
-                            {fieldTypes.map((t) => (
-                              <option key={t.value} value={t.value}>
-                                {t.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="col-span-3">
-                          {field.fieldType === 'relation' ? (
-                            <>
-                              <label className="block text-xs text-gray-500 mb-1">
-                                Related Module
-                              </label>
-                              <select
-                                value={field.relationModule}
-                                onChange={(e) => updateField(index, { relationModule: e.target.value })}
-                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                              >
-                                <option value="">Select module...</option>
-                                {modules
-                                  .filter((m) => m.name !== name) // Don't allow self-reference
-                                  .map((m) => (
-                                    <option key={m.name} value={m.name}>
-                                      {m.display_name}
-                                    </option>
-                                  ))}
-                              </select>
-                            </>
-                          ) : field.fieldType === 'date' ? (
-                            <div className="space-y-2">
-                              <div>
-                                <label className="block text-xs text-gray-500 mb-1">
-                                  Warning Mode
-                                </label>
-                                <select
-                                  value={field.warningMode}
-                                  onChange={(e) => updateField(index, { warningMode: e.target.value as DateWarningMode })}
-                                  className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                                >
-                                  <option value="overdue">Deadline (green → yellow → red when overdue)</option>
-                                  <option value="predate">Start Date (yellow → red, stays red after)</option>
-                                </select>
-                              </div>
-                              <div className="flex gap-2">
-                                <div className="flex-1">
-                                  <label className="block text-xs text-gray-500 mb-1">
-                                    Yellow Warning (days)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    value={field.warningYellowDays}
-                                    onChange={(e) => updateField(index, { warningYellowDays: e.target.value })}
-                                    placeholder="30"
-                                    min="0"
-                                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                                  />
-                                </div>
-                                <div className="flex-1">
-                                  <label className="block text-xs text-gray-500 mb-1">
-                                    Red Warning (days)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    value={field.warningRedDays}
-                                    onChange={(e) => updateField(index, { warningRedDays: e.target.value })}
-                                    placeholder="10"
-                                    min="0"
-                                    className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                                  />
-                                </div>
+                            <div className="flex items-center gap-3">
+                              <ChevronDownIcon
+                                className={`h-4 w-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                              />
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-gray-900">
+                                  {field.displayName || field.name || 'New Field'}
+                                </span>
+                                <span className="text-xs px-2 py-0.5 bg-gray-200 text-gray-600 rounded">
+                                  {fieldTypeLabel}
+                                </span>
                               </div>
                             </div>
-                          ) : (
-                            <>
-                              <label className="block text-xs text-gray-500 mb-1">
-                                Options (for select)
-                              </label>
-                              <input
-                                type="text"
-                                value={field.options}
-                                onChange={(e) => updateField(index, { options: e.target.value })}
-                                placeholder="Option1, Option2"
-                                className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100"
-                                disabled={field.fieldType !== 'select'}
-                              />
-                            </>
+                            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                              {field.isRequired && (
+                                <span className="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded">Required</span>
+                              )}
+                              {field.showInList ? (
+                                <EyeIcon className="h-4 w-4 text-green-600" title="Visible in list" />
+                              ) : (
+                                <EyeSlashIcon className="h-4 w-4 text-gray-400" title="Hidden in list" />
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => removeField(index)}
+                                className="p-1 text-red-500 hover:bg-red-50 rounded"
+                                title="Remove field"
+                              >
+                                <TrashIcon className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Expanded Content */}
+                          {isExpanded && (
+                            <div className="p-4 border-t border-gray-200 space-y-4">
+                              {/* Row 1: Name and Display Name */}
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Field Name (slug)
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={field.name}
+                                    onChange={(e) => updateField(index, { name: e.target.value })}
+                                    placeholder="field_name"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Display Name
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={field.displayName}
+                                    onChange={(e) => updateField(index, { displayName: e.target.value })}
+                                    placeholder="Field Label"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Row 2: Type and Weight */}
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Field Type
+                                  </label>
+                                  <select
+                                    value={field.fieldType}
+                                    onChange={(e) => updateField(index, { fieldType: e.target.value as FieldType })}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  >
+                                    {fieldTypes.map((t) => (
+                                      <option key={t.value} value={t.value}>
+                                        {t.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Sort Weight (1-99, lower = first)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    value={field.weight}
+                                    onChange={(e) => updateField(index, { weight: e.target.value })}
+                                    placeholder="50"
+                                    min="1"
+                                    max="99"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Type-specific options */}
+                              {field.fieldType === 'relation' && (
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Related Module
+                                  </label>
+                                  <select
+                                    value={field.relationModule}
+                                    onChange={(e) => updateField(index, { relationModule: e.target.value })}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  >
+                                    <option value="">Select module...</option>
+                                    {modules
+                                      .filter((m) => m.name !== name)
+                                      .map((m) => (
+                                        <option key={m.name} value={m.name}>
+                                          {m.display_name}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </div>
+                              )}
+
+                              {field.fieldType === 'select' && (
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Options (comma-separated)
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={field.options}
+                                    onChange={(e) => updateField(index, { options: e.target.value })}
+                                    placeholder="Option 1, Option 2, Option 3"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  />
+                                </div>
+                              )}
+
+                              {field.fieldType === 'date' && (
+                                <div className="space-y-3">
+                                  <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                      Warning Mode
+                                    </label>
+                                    <select
+                                      value={field.warningMode}
+                                      onChange={(e) => updateField(index, { warningMode: e.target.value as DateWarningMode })}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                    >
+                                      <option value="overdue">Deadline (green → yellow → red when overdue)</option>
+                                      <option value="predate">Start Date (yellow → red, stays red after)</option>
+                                    </select>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Yellow Warning (days)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        value={field.warningYellowDays}
+                                        onChange={(e) => updateField(index, { warningYellowDays: e.target.value })}
+                                        placeholder="30"
+                                        min="0"
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Red Warning (days)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        value={field.warningRedDays}
+                                        onChange={(e) => updateField(index, { warningRedDays: e.target.value })}
+                                        placeholder="10"
+                                        min="0"
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Default Value (for applicable types) */}
+                              {!['relation', 'user', 'boolean'].includes(field.fieldType) && (
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Default Value
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={field.defaultValue}
+                                    onChange={(e) => updateField(index, { defaultValue: e.target.value })}
+                                    placeholder="Optional default value"
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  />
+                                </div>
+                              )}
+
+                              {/* Checkboxes */}
+                              <div className="flex items-center gap-6 pt-2">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={field.isRequired}
+                                    onChange={(e) => updateField(index, { isRequired: e.target.checked })}
+                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                                  />
+                                  <span className="text-sm text-gray-700">Required field</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={field.showInList}
+                                    onChange={(e) => updateField(index, { showInList: e.target.checked })}
+                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                                  />
+                                  <span className="text-sm text-gray-700">Show in records list</span>
+                                </label>
+                              </div>
+                            </div>
                           )}
                         </div>
-                        <div className="col-span-1">
-                          <label className="block text-xs text-gray-500 mb-1">Weight</label>
-                          <input
-                            type="number"
-                            value={field.weight}
-                            onChange={(e) => updateField(index, { weight: e.target.value })}
-                            placeholder="50"
-                            min="1"
-                            max="99"
-                            className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                            title="Lower weight = higher priority (1-99)"
-                          />
-                        </div>
-                        <div className="col-span-1 flex items-end gap-2">
-                          <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={field.isRequired}
-                              onChange={(e) => updateField(index, { isRequired: e.target.checked })}
-                              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                            />
-                            Req
-                          </label>
-                        </div>
-                        <div className="col-span-1 flex items-end justify-end">
-                          <button
-                            type="button"
-                            onClick={() => removeField(index)}
-                            className="p-1.5 text-red-500 hover:bg-red-50 rounded"
-                            title="Remove field"
-                          >
-                            <TrashIcon className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

@@ -651,9 +651,9 @@ export default function RecordsList() {
       }
     );
 
-    // Add columns for each module field
+    // Add columns for each module field (only those with show_in_list enabled)
     if (module?.fields) {
-      module.fields.forEach((field) => {
+      module.fields.filter(f => f.show_in_list !== 0).forEach((field) => {
         const colDef: ColDef = {
           headerName: field.display_name,
           valueGetter: (params) => {

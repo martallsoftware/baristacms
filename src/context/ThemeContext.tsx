@@ -1,9 +1,10 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import { settingsService } from '../services/api';
 
-export type ThemeColor = 'blue' | 'green' | 'purple' | 'red' | 'orange' | 'teal';
+export type ThemeColor = 'barista' | 'blue' | 'green' | 'purple' | 'red' | 'orange' | 'teal';
 
 export const themeOptions: { value: ThemeColor; label: string; color: string }[] = [
+  { value: 'barista', label: 'Barista Brown', color: '#b97738' },
   { value: 'blue', label: 'Blue', color: '#2563eb' },
   { value: 'green', label: 'Green', color: '#16a34a' },
   { value: 'purple', label: 'Purple', color: '#9333ea' },
@@ -29,7 +30,7 @@ export function useTheme() {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeColor>('blue');
+  const [theme, setThemeState] = useState<ThemeColor>('barista');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
