@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useMsal } from '@azure/msal-react';
 import { useUser } from '../context/UserContext';
 import { menuService, settingsService, type MenuItem } from '../services/api';
+import { sseService } from '../services/sse';
 import {
   HomeIcon,
   CubeIcon,
@@ -154,6 +155,29 @@ export default function Layout() {
     const interval = setInterval(loadUnreadCounts, 30000); // Refresh every 30 seconds
     return () => clearInterval(interval);
   }, [location.pathname, loadUnreadCounts]);
+
+  // Subscribe to real-time updates via SSE
+  useEffect(() => {
+    // Connect to SSE
+    sseService.connect();
+
+    // Subscribe to unread count changes
+    const unsubscribeUnread = sseService.on('unread:changed', () => {
+      loadUnreadCounts();
+    });
+
+    // Subscribe to record creation events
+    const unsubscribeRecord = sseService.on('record:created', () => {
+      loadUnreadCounts();
+    });
+
+    // Cleanup on unmount
+    return () => {
+      unsubscribeUnread();
+      unsubscribeRecord();
+      sseService.disconnect();
+    };
+  }, [loadUnreadCounts]);
 
   const loadMenu = async () => {
     try {

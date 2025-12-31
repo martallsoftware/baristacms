@@ -31,6 +31,7 @@ import {
 import ImageViewer from '../../components/ImageViewer';
 import EmailInbox from '../../components/EmailInbox';
 import { useUser } from '../../context/UserContext';
+import { sseService } from '../../services/sse';
 
 // API base URL for serving static files (images, documents)
 const API_BASE = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:3001';
@@ -289,6 +290,24 @@ export default function RecordsList() {
       loadData();
     }
   }, [moduleName, recordService]);
+
+  // Subscribe to real-time updates for this module
+  useEffect(() => {
+    if (!moduleName) return;
+
+    const unsubscribe = sseService.on('record:created', (data: unknown) => {
+      const eventData = data as { moduleName: string; recordId: number; source: string };
+      // Only reload if the event is for this module
+      if (eventData.moduleName?.toLowerCase() === moduleName.toLowerCase()) {
+        console.log('[RecordsList] New record created via', eventData.source, '- refreshing list');
+        loadData();
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [moduleName]);
 
   const loadData = async () => {
     if (!moduleName || !recordService) return;

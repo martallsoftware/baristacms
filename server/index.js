@@ -36,6 +36,7 @@ import { createLocalAuthRoutes } from './routes/localAuth.js';
 import { startEmailProcessor } from './services/emailProcessor.js';
 import { initEmailWithDatabase } from './services/email.js';
 import emailInboxRoutes from './routes/emailInbox.js';
+import { addClient } from './services/eventEmitter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -89,10 +90,10 @@ app.use('/api/auth', (req, res, next) => {
   res.status(503).json({ message: 'Server starting...' });
 });
 
-// Apply authentication to all /api routes (except health check, public settings, and auth)
+// Apply authentication to all /api routes (except health check, public settings, auth, and events)
 app.use('/api', (req, res, next) => {
-  // Skip auth for /api/auth routes
-  if (req.path.startsWith('/auth')) {
+  // Skip auth for public routes
+  if (req.path.startsWith('/auth') || req.path === '/events') {
     return next();
   }
   return authenticateWithBypass(req, res, next);
@@ -175,6 +176,31 @@ async function startServer() {
     app.use('/api/basic-pages', createBasicPagesRoutes(db, uploadsDir));
     app.use('/api/groups', createGroupRoutes(db));
     app.use('/api/email-inbox', emailInboxRoutes);
+
+    // Server-Sent Events endpoint for real-time updates
+    app.get('/api/events', (req, res) => {
+      // Set SSE headers
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      // Send initial connection message
+      res.write('event: connected\ndata: {"status":"connected"}\n\n');
+
+      // Add client to the list
+      addClient(res);
+
+      // Keep connection alive with heartbeat
+      const heartbeat = setInterval(() => {
+        res.write(':heartbeat\n\n');
+      }, 30000);
+
+      // Clean up on close
+      req.on('close', () => {
+        clearInterval(heartbeat);
+      });
+    });
 
     // Start email processor if configured
     const emailIntervalSetting = await db.get(

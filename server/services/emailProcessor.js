@@ -14,6 +14,7 @@ import {
   isImageContentType,
   sendEmail,
 } from './email.js';
+import { emitRecordCreated, emitUnreadCountsChanged } from './eventEmitter.js';
 import { join } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
@@ -408,6 +409,10 @@ async function processEmails(db, uploadsDir) {
 
         // Mark as read
         await markEmailAsRead(email.id);
+
+        // Emit real-time events for frontend updates
+        emitRecordCreated(module.name, recordId, 'email');
+        emitUnreadCountsChanged();
 
         processedCount++;
         debugLog(`Created record ${module.name.toUpperCase()}-${recordId}`);
