@@ -44,6 +44,9 @@ let configCache = {
  */
 export function initEmailWithDatabase(db) {
   dbInstance = db;
+  // Clear any stale cache
+  configCache.data = null;
+  configCache.lastFetch = 0;
   console.log('Email service initialized with database connection');
 }
 

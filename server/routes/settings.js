@@ -189,8 +189,19 @@ export function createSettingsRoutes(db) {
   router.put('/:key', async (req, res) => {
     try {
       const { key } = req.params;
-      const { value, type, description } = req.body;
+      let { value, type, description } = req.body;
       const updatedBy = req.user?.email;
+
+      // Skip update if value is masked (unchanged sensitive field)
+      if (SENSITIVE_KEYS.includes(key) && value === '********') {
+        const existing = await db.get('SELECT * FROM site_settings WHERE setting_key = ?', [key]);
+        return res.json(existing || { setting_key: key, message: 'No change' });
+      }
+
+      // Encrypt sensitive settings before storing
+      if (SENSITIVE_KEYS.includes(key) && value && !value.includes(':')) {
+        value = encrypt(value);
+      }
 
       // Check if setting exists
       const existing = await db.get('SELECT * FROM site_settings WHERE setting_key = ?', [key]);

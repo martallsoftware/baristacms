@@ -990,7 +990,7 @@ export default function RecordsList() {
             )}
             {!checkingEmailConfig && emailConfigStatus && !emailConfigStatus.configured && (
               <div className="mx-6 mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm">
-                <strong>Email not configured:</strong> SMTP settings are missing. Please contact your administrator to configure email settings (SMTP_USER, SMTP_PASSWORD).
+                <strong>Email not configured:</strong> {emailConfigStatus.error || 'Please configure email settings in Admin > Settings.'}
               </div>
             )}
             {!checkingEmailConfig && emailConfigStatus && emailConfigStatus.configured && !emailConfigStatus.verified && (
