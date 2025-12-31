@@ -83,7 +83,7 @@ app.get('/api/settings/auth-config', (req, res) => authConfigHandler(req, res));
 
 // Version endpoint (public, no auth required) - for displaying version in UI
 const serverPackageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-app.get('/api/settings/version', (req, res) => {
+app.get('/api/version', (req, res) => {
   res.json({ name: serverPackageJson.name, version: serverPackageJson.version });
 });
 
@@ -99,7 +99,8 @@ app.use('/api/auth', (req, res, next) => {
 // Apply authentication to all /api routes (except health check, public settings, auth, and events)
 app.use('/api', (req, res, next) => {
   // Skip auth for public routes
-  if (req.path.startsWith('/auth') || req.path === '/events') {
+  const publicPaths = ['/auth', '/events', '/version', '/settings/version', '/settings/auth-config', '/settings/public/'];
+  if (publicPaths.some(p => req.path === p || req.path.startsWith(p + '/') || req.path.startsWith(p))) {
     return next();
   }
   return authenticateWithBypass(req, res, next);

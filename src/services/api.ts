@@ -861,7 +861,7 @@ export const settingsService = {
 
   async getVersion(): Promise<{ name: string; version: string }> {
     // Public endpoint - no auth required
-    const response = await fetch(`${API_URL}/settings/version`);
+    const response = await fetch(`${API_URL}/version`);
     return handleResponse<{ name: string; version: string }>(response);
   },
 
