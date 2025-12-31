@@ -13,7 +13,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { authenticateWithBypass, initAuthWithDatabase } from './auth.js';
@@ -80,6 +80,12 @@ app.get('/api/settings/public/:key', (req, res) => publicSettingsHandler(req, re
 // Auth config endpoint (public, no auth required) - for frontend MSAL initialization
 let authConfigHandler = (req, res) => res.status(503).json({ message: 'Server starting...' });
 app.get('/api/settings/auth-config', (req, res) => authConfigHandler(req, res));
+
+// Version endpoint (public, no auth required) - for displaying version in UI
+const serverPackageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+app.get('/api/settings/version', (req, res) => {
+  res.json({ name: serverPackageJson.name, version: serverPackageJson.version });
+});
 
 // Local auth routes (no auth required) - configured after database connection
 let localAuthRouter = null;
