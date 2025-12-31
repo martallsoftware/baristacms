@@ -8,7 +8,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { encrypt, decrypt } from '../utils/crypto.js';
+
+// Get package.json version
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 // Settings that should be encrypted when stored
 const SENSITIVE_KEYS = ['azure_client_secret', 'email_password', 'smtp_password'];
@@ -17,6 +23,14 @@ const execAsync = promisify(exec);
 
 export function createSettingsRoutes(db) {
   const router = Router();
+
+  // Get API version (public endpoint - no auth required)
+  router.get('/version', (req, res) => {
+    res.json({
+      name: packageJson.name,
+      version: packageJson.version,
+    });
+  });
 
   // Get Azure auth config for frontend (public endpoint - no auth required)
   // Only returns non-sensitive Azure config needed for MSAL initialization

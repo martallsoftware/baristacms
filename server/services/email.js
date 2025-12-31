@@ -75,9 +75,11 @@ async function getEmailConfigFromDB() {
   };
 
   // Try to fetch from database
+  console.log('[Email Config] dbInstance:', dbInstance ? 'connected' : 'NULL');
   if (dbInstance) {
     try {
       const settings = await dbInstance.all("SELECT setting_key, setting_value FROM site_settings WHERE setting_key LIKE 'email_%' OR setting_key LIKE 'azure_%' OR setting_key LIKE 'smtp_%'");
+      console.log('[Email Config] Found', settings?.length || 0, 'settings from database');
 
       const dbSettings = {};
       settings.forEach(s => { dbSettings[s.setting_key] = s.setting_value; });
@@ -107,8 +109,11 @@ async function getEmailConfigFromDB() {
     } catch (error) {
       console.warn('Failed to fetch email config from database:', error.message);
     }
+  } else {
+    console.warn('[Email Config] No database connection - using environment variables only');
   }
 
+  console.log('[Email Config] Final provider:', config.provider);
   return config;
 }
 

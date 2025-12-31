@@ -859,6 +859,12 @@ export const settingsService = {
     return handleResponse<{ type: string; database: string }>(response);
   },
 
+  async getVersion(): Promise<{ name: string; version: string }> {
+    // Public endpoint - no auth required
+    const response = await fetch(`${API_URL}/settings/version`);
+    return handleResponse<{ name: string; version: string }>(response);
+  },
+
   async downloadBackup(): Promise<{ blob: Blob; filename: string }> {
     const response = await authFetch(`${API_URL}/settings/database/backup`);
     if (!response.ok) {

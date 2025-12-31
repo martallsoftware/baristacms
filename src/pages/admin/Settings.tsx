@@ -14,7 +14,9 @@ import {
   ArrowDownTrayIcon,
   CloudIcon,
   ServerIcon,
+  InformationCircleIcon,
 } from '@heroicons/react/24/outline';
+import packageJson from '../../../package.json';
 
 export default function SettingsPage() {
   const { isAdmin } = useUser();
@@ -46,11 +48,22 @@ export default function SettingsPage() {
   const [dbInfo, setDbInfo] = useState<{ type: string; database: string } | null>(null);
   const [dbInfoError, setDbInfoError] = useState<string | null>(null);
   const [backupLoading, setBackupLoading] = useState(false);
+  const [apiVersion, setApiVersion] = useState<{ name: string; version: string } | null>(null);
 
   useEffect(() => {
     loadSettings();
     loadDatabaseInfo();
+    loadApiVersion();
   }, []);
+
+  const loadApiVersion = async () => {
+    try {
+      const version = await settingsService.getVersion();
+      setApiVersion(version);
+    } catch (err) {
+      console.error('Failed to load API version:', err);
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -822,6 +835,39 @@ export default function SettingsPage() {
                 </>
               )}
             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Version Information */}
+      <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
+          <div className="flex items-center gap-2">
+            <InformationCircleIcon className="h-5 w-5 text-gray-600" />
+            <h2 className="text-lg font-semibold text-gray-900">Version Information</h2>
+          </div>
+        </div>
+
+        <div className="p-6">
+          <div className="grid grid-cols-2 gap-6 max-w-md">
+            <div>
+              <span className="block text-sm font-medium text-gray-700 mb-1">Frontend</span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-lg font-semibold text-gray-900">v{packageJson.version}</span>
+                <span className="text-xs text-gray-500">{packageJson.name}</span>
+              </div>
+            </div>
+            <div>
+              <span className="block text-sm font-medium text-gray-700 mb-1">API</span>
+              {apiVersion ? (
+                <div className="flex items-baseline gap-2">
+                  <span className="text-lg font-semibold text-gray-900">v{apiVersion.version}</span>
+                  <span className="text-xs text-gray-500">{apiVersion.name}</span>
+                </div>
+              ) : (
+                <span className="text-sm text-gray-500">Loading...</span>
+              )}
+            </div>
           </div>
         </div>
       </div>
