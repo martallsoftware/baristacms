@@ -16,7 +16,9 @@ jobs:
     name: Build and Deploy Job
     steps:
       - uses: actions/checkout@v3
-        with: 
+        with:
+          node-verion: '20.19.0'
+          cache: 'npm'
           persist-credentials: false
           
       - name: Build And Deploy
@@ -44,4 +46,5 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_LIVELY_SEA_09A68C710 }}
           action: "close"
+
 
