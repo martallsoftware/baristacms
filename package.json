@@ -10,6 +10,11 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
+  },  
+  {
+    "engines": {
+      "node": ">=20.19.0 <21"
+    }
   },
   "dependencies": {
     "@azure/msal-browser": "^4.27.0",
