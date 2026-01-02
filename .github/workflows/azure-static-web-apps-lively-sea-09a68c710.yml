@@ -17,9 +17,21 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          node-verion: '20.19.0'
-          cache: 'npm'
           persist-credentials: false
+          
+      # Ensure Node 20 for install/build steps
+      - name: Use Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: 'npm'
+
+      # (Optional but helpful) Print versions for debugging
+      - name: Show Node & npm versions
+        run: |
+          node -v
+          npm -v
+
           
       - name: Build And Deploy
         id: builddeploy
@@ -46,5 +58,6 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_LIVELY_SEA_09A68C710 }}
           action: "close"
+
 
 
