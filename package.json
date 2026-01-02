@@ -7,11 +7,11 @@
     "node": ">=20.19.0 <21"
   },
   "scripts": {
-    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
-    "dev:client": "vite",
-    "build:azure": "npm run build"
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "dev": "vite",
+    "build": "vite build",
+    "build:azure": "npm run build",
+    "preview": "vite preview",
+    "lint": "eslint ."
   },  
   "dependencies": {
     "@azure/msal-browser": "^4.27.0",
