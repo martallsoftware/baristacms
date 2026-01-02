@@ -8,6 +8,7 @@
     "dev:client": "vite",
     "dev:server": "cd server && npm run dev",
     "build": "tsc -b && vite build",
+    "build:azure": "npm run build"
     "lint": "eslint .",
     "preview": "vite preview"
   },  
