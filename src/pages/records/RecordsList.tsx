@@ -463,7 +463,7 @@ export default function RecordsList() {
 
     setEmailSubject(subject);
     setEmailMessage(messageParts.join('\n'));
-    setEmailTo('');
+    setEmailTo(record.assigned_to || '');
     setEmailError(null);
     setEmailSuccess(false);
     setEmailPopupOpen(true);
